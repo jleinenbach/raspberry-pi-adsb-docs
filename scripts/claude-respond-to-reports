@@ -1,0 +1,477 @@
+#!/bin/bash
+set -o pipefail
+#===============================================================================
+# Claude Techniker - Wartungsskript mit voller Berechtigung
+# Erhält nur validierte Anweisungen vom Sekretär-Claude
+#===============================================================================
+LOG_DIR="/var/log/claude-maintenance"
+LOG_FILE="$LOG_DIR/response-$(date '+%Y-%m-%d').log"
+LOCK_FILE="/var/run/claude-respond.lock"
+HEARTBEAT_FILE="/var/run/claude-respond.heartbeat"
+mkdir -p "$LOG_DIR"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+#-------------------------------------------------------------------------------
+# Heartbeat für Wächter-Claude
+#-------------------------------------------------------------------------------
+heartbeat() {
+    date +%s > "$HEARTBEAT_FILE"
+}
+
+cleanup() {
+    flock -u 200 2>/dev/null || true
+    rm -f "$LOCK_FILE" "$HEARTBEAT_FILE"
+}
+
+#-------------------------------------------------------------------------------
+# Atomares Locking mit flock
+#-------------------------------------------------------------------------------
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    OTHER_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+    log "Wartung bereits aktiv (PID: $OTHER_PID). Dieser Start wird abgebrochen."
+    /usr/local/sbin/telegram-notify "Wartung laeuft bereits (PID: $OTHER_PID). Doppelstart verhindert."
+    exit 0
+fi
+echo $$ > "$LOCK_FILE"
+trap 'cleanup' EXIT
+
+heartbeat
+
+#-------------------------------------------------------------------------------
+
+log "=========================================="
+log "Claude Techniker gestartet"
+log "=========================================="
+
+#-------------------------------------------------------------------------------
+# Prüfe auf offene Session mit Antwort
+#-------------------------------------------------------------------------------
+SESSION_DIR="/var/lib/claude-pending"
+SESSION_FILE="$SESSION_DIR/session.json"
+PENDING_CONTEXT=""
+PENDING_QUESTION=""
+PENDING_ANSWER=""
+
+if [ -f "$SESSION_FILE" ]; then
+    SESSION_STATE=$(jq -r ".state" "$SESSION_FILE" 2>/dev/null)
+    SESSION_EXPIRES=$(jq -r ".expires" "$SESSION_FILE" 2>/dev/null)
+    EXPIRES_TS=$(date -d "$SESSION_EXPIRES" +%s 2>/dev/null || echo 0)
+    NOW_TS=$(date +%s)
+    
+    if [ "$NOW_TS" -lt "$EXPIRES_TS" ]; then
+        if [ "$SESSION_STATE" = "answered" ]; then
+            PENDING_CONTEXT=$(jq -r ".context" "$SESSION_FILE" 2>/dev/null)
+            PENDING_QUESTION=$(jq -r ".question" "$SESSION_FILE" 2>/dev/null)
+            PENDING_ANSWER=$(jq -r ".interactions[-1].validated" "$SESSION_FILE" 2>/dev/null)
+            log "Offene Session gefunden mit Antwort: $PENDING_ANSWER"
+        elif [ "$SESSION_STATE" = "waiting_for_answer" ]; then
+            log "Session wartet noch auf Antwort - überspringe Wartung"
+            rm -f "$LOCK_FILE"
+            exit 0
+        fi
+    else
+        SID=$(jq -r ".id" "$SESSION_FILE")
+        mv "$SESSION_FILE" "$SESSION_DIR/history/${SID}-expired.json" 2>/dev/null
+        log "Session $SID abgelaufen - archiviert"
+    fi
+fi
+log "=========================================="
+
+heartbeat
+
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+# Sammle Daten
+#-------------------------------------------------------------------------------
+FEEDER_STATUS=""
+for svc in mlathub readsb piaware fr24feed adsbexchange-feed adsbexchange-mlat adsbexchange-stats tar1090 adsbfi-feed adsbfi-mlat opensky-feeder theairtraffic-feed rbfeeder airplanes-feed airplanes-mlat pfclient dragonsync; do
+    FEEDER_STATUS="$FEEDER_STATUS$svc: $(systemctl is-active $svc 2>/dev/null)
+"
+done
+
+ESC_COUNT=$(grep -c -E 'ESKALATION|AUFGEGEBEN' /var/log/feeder-watchdog.log 2>/dev/null) || true
+ESC_COUNT=${ESC_COUNT:-0}
+if [ "$ESC_COUNT" -gt 0 ]; then
+    ESCALATIONS=$(grep -E 'ESKALATION|AUFGEGEBEN' /var/log/feeder-watchdog.log 2>/dev/null | tail -10)
+else
+    ESCALATIONS="Keine (0)"
+fi
+
+REPORT_DATA="=== SYSTEMCTL --FAILED (KRITISCH!) ===
+$(systemctl --failed --no-pager 2>/dev/null || echo 'Fehler beim Abrufen')
+
+=== CORE SERVICES STATUS ===
+journald: $(systemctl is-active systemd-journald 2>/dev/null)
+journald-flush: $(systemctl is-active systemd-journal-flush 2>/dev/null)
+NetworkManager: $(systemctl is-active NetworkManager 2>/dev/null)
+chronyd: $(systemctl is-active chronyd 2>/dev/null)
+
+=== KERNEL ERRORS (dmesg letzte 24h) ===
+$(dmesg --level=err,warn --time-format=reltime 2>/dev/null | tail -30 || dmesg | grep -iE 'error|warning|fail' | tail -30)
+
+=== APPARMOR DENIED (letzte 24h) ===
+$(journalctl -k --since '24 hours ago' --no-pager 2>/dev/null | grep -i 'apparmor.*DENIED' | tail -15 || dmesg | grep -i 'apparmor.*DENIED' | tail -15)
+
+=== DEBSECAN: Behebbare CVEs ===
+$(debsecan --suite bookworm --only-fixed 2>/dev/null | head -30)
+
+=== LYNIS: Warnings/Suggestions ===
+$(grep -E '^warning\[|^suggestion\[' /var/log/lynis-report.dat 2>/dev/null | head -20)
+
+=== RKHUNTER: Warnings ===
+$(grep -i 'warning' /var/log/rkhunter.log 2>/dev/null | tail -10)
+
+=== JOURNALCTL: Fehler 24h ===
+$(journalctl -p err --since '24 hours ago' --no-pager 2>/dev/null | tail -20 || echo 'WARNUNG: journalctl nicht verfügbar!')
+
+=== FEEDER-STATUS ===
+$FEEDER_STATUS
+
+=== WATCHDOG: Eskalationen ===
+$ESCALATIONS
+
+=== SIGNAL-QUALITÄT ===
+$(cat /run/readsb/stats.json 2>/dev/null | jq -r '"Gain: \(.gain_db)dB, Signal: \(.last1min.local.signal)dBFS, Strong: \(.last1min.local.strong_signals)/min"' 2>/dev/null || echo 'Nicht verfügbar')
+
+=== USB-HARDWARE ===
+$(lsusb | grep -iE 'RTL|SDR|0BDA:2838|0BDA:2832' || echo 'WARNUNG: Kein RTL-SDR gefunden!')
+
+=== SD-KARTEN-GESUNDHEIT ===
+$(sudo /usr/local/sbin/sd-health-check status 2>/dev/null || echo 'Check nicht verfügbar')
+
+=== SPEICHER ===
+RAM: $(free -h | awk '/^Mem:/ {print $3 "/" $2 " (" int($3/$2*100) "%)"}')
+Disk: $(df -h / | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')
+tmpfs /var/log: $(df -h /var/log | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
+
+#-------------------------------------------------------------------------------
+# wiedehopf-Tools Update-Check
+#-------------------------------------------------------------------------------
+WIEDEHOPF_UPDATES=""
+
+# readsb Version prüfen
+if [ -d "/usr/local/share/adsb-wiki/readsb-install/git" ]; then
+    cd /usr/local/share/adsb-wiki/readsb-install/git
+    READSB_LOCAL=$(cat version 2>/dev/null || echo "unknown")
+    git fetch --tags --quiet 2>/dev/null
+    READSB_REMOTE=$(git tag 2>/dev/null | sort -V | tail -1 | sed 's/^v//')
+    if [ -n "$READSB_REMOTE" ] && [ "$READSB_LOCAL" != "$READSB_REMOTE" ]; then
+        WIEDEHOPF_UPDATES="${WIEDEHOPF_UPDATES}readsb: $READSB_LOCAL -> $READSB_REMOTE UPDATE VERFÜGBAR\n"
+    fi
+fi
+
+# tar1090 prüfen
+if [ -d "/usr/local/share/tar1090/git" ]; then
+    cd /usr/local/share/tar1090/git
+    git fetch --quiet 2>/dev/null
+    TAR1090_LOCAL=$(git rev-parse HEAD 2>/dev/null | head -c 7)
+    TAR1090_REMOTE=$(git rev-parse origin/master 2>/dev/null | head -c 7)
+    if [ "$TAR1090_LOCAL" != "$TAR1090_REMOTE" ]; then
+        WIEDEHOPF_UPDATES="${WIEDEHOPF_UPDATES}tar1090: $TAR1090_LOCAL -> $TAR1090_REMOTE UPDATE VERFÜGBAR\n"
+    fi
+fi
+
+# graphs1090 prüfen
+if [ -d "/usr/share/graphs1090/git" ]; then
+    cd /usr/share/graphs1090/git
+    git fetch --quiet 2>/dev/null
+    GRAPHS_LOCAL=$(git rev-parse HEAD 2>/dev/null | head -c 7)
+    GRAPHS_REMOTE=$(git rev-parse origin/master 2>/dev/null | head -c 7)
+    if [ "$GRAPHS_LOCAL" != "$GRAPHS_REMOTE" ]; then
+        WIEDEHOPF_UPDATES="${WIEDEHOPF_UPDATES}graphs1090: $GRAPHS_LOCAL -> $GRAPHS_REMOTE UPDATE VERFÜGBAR\n"
+    fi
+fi
+
+cd /home/pi
+
+if [ -n "$WIEDEHOPF_UPDATES" ]; then
+    REPORT_DATA="$REPORT_DATA
+
+=== WIEDEHOPF-TOOLS UPDATES ===
+$(echo -e "$WIEDEHOPF_UPDATES")"
+fi
+
+#-------------------------------------------------------------------------------
+# Raspberry Pi Firmware Update-Check
+#-------------------------------------------------------------------------------
+FIRMWARE_STATUS=$(sudo rpi-eeprom-update 2>/dev/null)
+BOOTLOADER_UPDATE=""
+VL805_UPDATE=""
+
+if echo "$FIRMWARE_STATUS" | grep -qi "BOOTLOADER:.*update available"; then
+    BOOTLOADER_CURRENT=$(echo "$FIRMWARE_STATUS" | grep "CURRENT:" | head -1 | sed 's/.*CURRENT: //')
+    BOOTLOADER_LATEST=$(echo "$FIRMWARE_STATUS" | grep "LATEST:" | head -1 | sed 's/.*LATEST: //')
+    BOOTLOADER_UPDATE="Bootloader: $BOOTLOADER_CURRENT -> $BOOTLOADER_LATEST UPDATE VERFÜGBAR"
+fi
+
+if echo "$FIRMWARE_STATUS" | grep -qi "VL805:.*update available"; then
+    VL805_CURRENT=$(echo "$FIRMWARE_STATUS" | grep "CURRENT:" | tail -1 | sed 's/.*CURRENT: //')
+    VL805_LATEST=$(echo "$FIRMWARE_STATUS" | grep "LATEST:" | tail -1 | sed 's/.*LATEST: //')
+    VL805_UPDATE="VL805 (USB): $VL805_CURRENT -> $VL805_LATEST UPDATE VERFÜGBAR"
+fi
+
+if [ -n "$BOOTLOADER_UPDATE" ] || [ -n "$VL805_UPDATE" ]; then
+    REPORT_DATA="$REPORT_DATA
+
+=== RASPBERRY PI FIRMWARE UPDATES ===
+${BOOTLOADER_UPDATE}
+${VL805_UPDATE}
+Hinweis: Firmware-Updates erfordern Neustart"
+fi
+
+heartbeat
+
+#-------------------------------------------------------------------------------
+# CVE pip-Patcher: Automatische Python-Paket-Updates
+#-------------------------------------------------------------------------------
+CVE_PIP_RESULT=""
+if [ -x /usr/local/sbin/cve-pip-patcher ]; then
+    log "Starte CVE pip-Patcher (Auto-Modus)..."
+    CVE_PIP_OUTPUT=$(/usr/local/sbin/cve-pip-patcher --auto 2>&1) || true
+
+    # Extrahiere Zusammenfassung
+    UPGRADED=$(echo "$CVE_PIP_OUTPUT" | grep "^.*Upgraded:" | tail -1 | awk '{print $NF}')
+    ALREADY_OK=$(echo "$CVE_PIP_OUTPUT" | grep "^.*Bereits OK:" | tail -1 | awk '{print $NF}')
+    MAJOR_PENDING=$(echo "$CVE_PIP_OUTPUT" | grep -A20 "Manuelle Prüfung" | grep "•" || true)
+
+    if [ -n "$UPGRADED" ] && [ "$UPGRADED" != "0" ]; then
+        CVE_PIP_RESULT="pip-Pakete upgraded: $UPGRADED"
+    fi
+    if [ -n "$MAJOR_PENDING" ]; then
+        CVE_PIP_RESULT="${CVE_PIP_RESULT}\nMajor-Updates verfügbar (manuell prüfen):\n$MAJOR_PENDING"
+    fi
+
+    if [ -n "$CVE_PIP_RESULT" ]; then
+        REPORT_DATA="$REPORT_DATA\n\n=== CVE PIP-PATCHER ERGEBNIS ===\n$CVE_PIP_RESULT"
+    fi
+    log "CVE pip-Patcher abgeschlossen"
+
+#-------------------------------------------------------------------------------
+# Wöchentliches Script Security Audit
+#-------------------------------------------------------------------------------
+AUDIT_MARKER="/var/lib/claude-pending/last-security-audit"
+AUDIT_RESULT=""
+
+# Prüfe ob Audit diese Woche schon lief
+if [ -f "$AUDIT_MARKER" ]; then
+    LAST_AUDIT=$(cat "$AUDIT_MARKER")
+    DAYS_AGO=$(( ($(date +%s) - LAST_AUDIT) / 86400 ))
+else
+    DAYS_AGO=999
+fi
+
+if [ "$DAYS_AGO" -ge 7 ]; then
+    log "Starte wöchentliches Script Security Audit..."
+    AUDIT_OUTPUT=$(/usr/local/sbin/script-security-audit 2>&1) || true
+    ISSUES=$(echo "$AUDIT_OUTPUT" | grep -c '\[' || echo "0")
+    
+    if [ "$ISSUES" -gt 0 ]; then
+        AUDIT_RESULT="Gefundene Probleme: $ISSUES
+$(echo "$AUDIT_OUTPUT" | grep '\[')"
+        REPORT_DATA="$REPORT_DATA
+
+=== SCRIPT SECURITY AUDIT (wöchentlich) ===
+$AUDIT_RESULT"
+    fi
+    
+    date +%s > "$AUDIT_MARKER"
+    log "Security Audit abgeschlossen: $ISSUES Probleme"
+fi
+
+heartbeat
+fi
+
+heartbeat
+
+#-------------------------------------------------------------------------------
+# Techniker-Prompt
+#-------------------------------------------------------------------------------
+SESSION_CONTEXT=""
+
+USER_INSTRUCTION_FILE="/var/lib/claude-pending/user-instruction.txt"
+USER_INSTRUCTION=""
+if [ -f "$USER_INSTRUCTION_FILE" ]; then
+    USER_INSTRUCTION=$(cat "$USER_INSTRUCTION_FILE")
+    rm -f "$USER_INSTRUCTION_FILE"
+    log "User-Anweisung: $USER_INSTRUCTION"
+    SESSION_CONTEXT="
+
+=== USER-ANWEISUNG ===
+$USER_INSTRUCTION
+
+Führe diese Anweisung priorisiert aus!"
+fi
+
+if [ -n "$PENDING_ANSWER" ]; then
+    SESSION_CONTEXT="
+
+=== OFFENE SESSION ===
+Ursprüngliche Frage: $PENDING_QUESTION
+User-Antwort (validiert): $PENDING_ANSWER
+Kontext: $PENDING_CONTEXT
+
+Bitte setze die Wartung basierend auf der User-Antwort fort."
+fi
+
+read -r -d '' PROMPT << 'PROMPTEOF'
+Du bist der TECHNIKER für einen Raspberry Pi ADS-B Feeder.
+Du hast volle Systemrechte, aber alle User-Anweisungen wurden bereits vom SEKRETÄR validiert.
+
+WICHTIG: Lies zuerst /home/pi/CLAUDE.md für:
+- Declined Recommendations (NICHT erneut vorschlagen!)
+- Implemented Changes (verifizieren)
+- Kommunikationsregeln
+
+DEINE AUFGABEN:
+1. Analysiere die Reports
+2. Bei Bedarf frage den User - die Antwort kommt validiert zurück
+3. Führe genehmigte Aktionen durch
+
+KOMMUNIKATION MIT DEM USER (über Sekretär):
+Nutze für Fragen:
+  ANTWORT=$(/usr/local/sbin/telegram-ask "Deine Frage")
+
+Die Antwort hat IMMER eines dieser Formate:
+- GENEHMIGT: [Anweisung] -> Führe die Anweisung aus
+- ABGELEHNT: [Grund] -> Aktion überspringen, Grund loggen
+- RÜCKFRAGE: [Frage] -> User will mehr Info, antworte via telegram-notify und frage erneut
+- TIMEOUT -> User hat nicht geantwortet, überspringen
+- PENDING:ID -> Session offen, User antwortet später - Wartung beenden, nächster Lauf setzt fort
+
+Für Nachrichten ohne Rückfrage:
+  /usr/local/sbin/telegram-notify "Info-Nachricht"
+  /usr/local/sbin/telegram-notify --success "Erfolg"
+  /usr/local/sbin/telegram-notify --error "Fehler"
+
+AUTOMATISCH (ohne Fragen - HÖCHSTE PRIORITÄT):
+- IMMER ZUERST: systemctl --failed prüfen und beheben!
+- journald/journald-flush neustarten wenn nicht active
+- AppArmor DENIED-Einträge analysieren und Profile anpassen
+- Feeder neustarten wenn nicht aktiv
+- Core-Services (journald, NetworkManager) neustarten wenn nötig
+- Fehlende Log-Verzeichnisse erstellen (tmpfs!)
+- apt upgrade wenn Security-Updates verfügbar
+- CVE pip-Patcher: Patch-Updates (x.y.z→x.y.z') werden automatisch durchgeführt
+  Major/Minor-Updates erscheinen im Report → CVE-PIP-UPDATE PROZEDUR befolgen
+- Nach Paket-Updates betroffene AppArmor-Profile prüfen
+
+MIT RÜCKFRAGE:
+- Konfigurationsänderungen (SSH, sysctl)
+- Neue Software installieren
+- Unklare Situationen
+- WIEDEHOPF-UPDATES (readsb, tar1090, graphs1090)
+
+WIEDEHOPF-UPDATE PROZEDUR:
+Wenn "WIEDEHOPF-TOOLS UPDATES" im Report erscheint:
+1. ERST prüfen: git -C [repo] log --oneline HEAD..origin/master (zeigt Änderungen)
+2. User informieren: "Update verfügbar: [version]. Änderungen: [zusammenfassung]"
+3. User fragen: "Update durchführen?"
+4. Bei JA: sudo bash [repo]/install.sh ausführen
+5. Nach Update: Services prüfen (systemctl is-active), Funktionstest
+6. Bei Fehler: Rollback dokumentieren, User informieren
+
+RASPBERRY PI FIRMWARE-UPDATE PROZEDUR:
+Wenn "RASPBERRY PI FIRMWARE UPDATES" im Report erscheint:
+1. User informieren: "Firmware-Update verfügbar (Bootloader/VL805)"
+2. User fragen: "Firmware-Update durchführen? Erfordert Neustart."
+3. Bei JA: sudo rpi-eeprom-update -a ausführen
+4. User informieren: "Update vorbereitet. Neustart erforderlich."
+5. User fragen: "Jetzt neustarten?"
+6. Bei JA: sudo reboot
+
+LYNIS-VORSCHLÄGE PROZEDUR:
+Für JEDEN Lynis-Vorschlag (suggestion) im Report:
+1. Prüfe ob in Declined-Liste (CLAUDE.md) → Überspringen
+2. Bewerte: Lässt sich leicht umsetzen? Gefährdet es Stabilität?
+3. Wenn JA zu 2: User informieren und fragen
+4. Wenn NEIN (einfach + sicher): AUTOMATISCH umsetzen!
+
+AUTOMATISCH umsetzbare Lynis-Vorschläge (Beispiele):
+- Unnötige Kernel-Module deaktivieren (blacklist)
+- Nicht benötigte Services deaktivieren
+- Dateiberechtigungen anpassen
+- Kernel-Updates durchführen (nach Rückfrage)
+
+MIT RÜCKFRAGE bei Lynis:
+- Kernel-Updates (KRNL-*) - können Neustart erfordern
+- Neue Software installieren (auditd, etc.)
+- Größere Konfigurationsänderungen
+
+CVE-PIP-UPDATE PROZEDUR:
+Wenn "CVE PIP-PATCHER ERGEBNIS" Major/Minor-Updates meldet:
+1. Prüfe Breaking Changes: pip3 index versions PAKET, dann Changelog recherchieren
+2. Prüfe lokale Nutzung: grep -r "import PAKET" /usr/local/sbin /home/pi/*.py
+3. Prüfe Abhängigkeiten: apt-cache rdepends python3-PAKET
+4. Wenn SICHER (keine Breaking Changes für unsere Nutzung):
+   pip3 install --user --break-system-packages "PAKET>=VERSION"
+5. Verifiziere: python3 -c "import PAKET; print(PAKET.__version__)"
+6. WICHTIG bei pycryptodome: Nutze pycryptodomex (Cryptodome-Namespace)!
+7. Aktualisiere CLAUDE.md CVE pip-Patcher Tabelle
+
+WICHTIG: Behandle ALLE Lynis-Vorschläge gleich wichtig!
+Niedrige Priorität bedeutet NICHT ignorieren.
+
+AUSGABE:
+- Liste durchgeführte Aktionen
+- Dokumentiere abgelehnte/übersprungene Aktionen
+
+TELEGRAM AM ENDE (MAX 500 ZEICHEN!):
+[TELEGRAM:OK] Zusammenfassung - wenn Probleme behoben
+[TELEGRAM:ERROR] Zusammenfassung - wenn Probleme offen
+
+Sende IMMER am Ende eine KURZE Telegram-Zusammenfassung (max 500 Zeichen).
+Beispiel: /usr/local/sbin/telegram-notify "Wartung: 15 Feeder OK, keine CVEs, System gesund."
+PROMPTEOF
+
+FULL_PROMPT="$PROMPT
+
+REPORT-DATEN:
+$REPORT_DATA$SESSION_CONTEXT"
+
+heartbeat
+
+#-------------------------------------------------------------------------------
+
+#-------------------------------------------------------------------------------
+# Techniker-Claude ausführen
+#-------------------------------------------------------------------------------
+log "Starte Techniker-Claude..."
+CLAUDE_OUTPUT=$(echo "$FULL_PROMPT" | /home/pi/.local/bin/claude -p \
+    --permission-mode acceptEdits \
+    --allowedTools "Bash Read Grep Edit" 2>&1)
+EXIT_CODE=$?
+
+heartbeat
+
+echo "$CLAUDE_OUTPUT" >> "$LOG_FILE"
+
+log "=========================================="
+log "Techniker beendet (Exit: $EXIT_CODE)"
+log "=========================================="
+
+# Telegram-Benachrichtigung
+if echo "$CLAUDE_OUTPUT" | grep -q '\[TELEGRAM:OK\]'; then
+    MSG=$(echo "$CLAUDE_OUTPUT" | grep '\[TELEGRAM:OK\]' | sed 's/\[TELEGRAM:OK\]//' | head -1)
+    /usr/local/sbin/telegram-notify --success "$MSG"
+elif echo "$CLAUDE_OUTPUT" | grep -q '\[TELEGRAM:ERROR\]'; then
+    MSG=$(echo "$CLAUDE_OUTPUT" | grep '\[TELEGRAM:ERROR\]' | sed 's/\[TELEGRAM:ERROR\]//' | head -1)
+    /usr/local/sbin/telegram-notify --error "$MSG"
+fi
+
+[ $EXIT_CODE -ne 0 ] && /usr/local/sbin/telegram-notify --error "Wartung fehlgeschlagen (Exit: $EXIT_CODE)"
+
+# Session archivieren
+if [ -f "$SESSION_FILE" ] && [ "$(jq -r .state "$SESSION_FILE" 2>/dev/null)" = "answered" ]; then
+    SID=$(jq -r ".id" "$SESSION_FILE")
+    mv "$SESSION_FILE" "$SESSION_DIR/history/${SID}-completed.json" 2>/dev/null
+    log "Session $SID abgeschlossen und archiviert"
+fi
+
+find "$LOG_DIR" -name "response-*.log" -mtime +14 -delete 2>/dev/null
+
+exit $EXIT_CODE

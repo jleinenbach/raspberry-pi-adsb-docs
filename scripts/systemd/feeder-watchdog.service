@@ -1,0 +1,22 @@
+[Unit]
+Description=Feeder Watchdog Service
+Documentation=https://github.com/jleinenbach/raspberry-pi-adsb-docs
+After=network.target
+
+[Service]
+Type=oneshot
+User=pi
+ExecStart=/usr/local/sbin/feeder-watchdog
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=feeder-watchdog
+
+# Security
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log /tmp
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Wartungs Watchdog Timer
+Documentation=https://github.com/jleinenbach/raspberry-pi-adsb-docs
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+AccuracySec=1min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

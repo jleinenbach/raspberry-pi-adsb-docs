@@ -1,0 +1,149 @@
+#!/bin/bash
+set -o pipefail
+#===============================================================================
+# Telegram Ask - Asynchrones Modell mit Rückfragen
+# Usage: telegram-ask "Frage" ["Kontext"]
+# Returns: GENEHMIGT:/ABGELEHNT:/RÜCKFRAGE: ... oder PENDING oder EXPIRED
+#===============================================================================
+
+# Fix 2026-01-25: source durch sichere Config-Ladung ersetzt
+# Sichere Config-Ladung (ohne source)
+TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN_HERE"')
+TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID="YOUR_CHAT_ID_HERE"')
+
+SESSION_DIR="/var/lib/claude-pending"
+SESSION_FILE="$SESSION_DIR/session.json"
+RATE_FILE="$SESSION_DIR/rate-limit.dat"
+ANSWER_FILE="/var/run/telegram-bot-answer"
+QUESTION_FILE="/var/run/telegram-bot-question"
+LOG="/var/log/claude-maintenance/telegram-ask.log"
+
+# Kurzes initiales Warten (10 Minuten) für schnelle Antworten
+INITIAL_WAIT=600
+# Session-Timeout (24 Stunden)
+SESSION_TIMEOUT=86400
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG"
+}
+
+send_telegram() {
+    curl -s --max-time 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHAT_ID}" \
+        -d text="$1" \
+        -d parse_mode="Markdown" > /dev/null 2>&1
+}
+
+QUESTION="$1"
+CONTEXT="$2"
+[ -z "$QUESTION" ] && exit 1
+
+SESSION_ID=$(date +%s)-$$
+
+#-------------------------------------------------------------------------------
+# Rate-Limit prüfen (Warnung, keine Blockade)
+#-------------------------------------------------------------------------------
+TODAY=$(date +%Y-%m-%d)
+if [ -f "$RATE_FILE" ]; then
+    RATE_DATE=$(head -1 "$RATE_FILE")
+    RATE_COUNT=$(tail -1 "$RATE_FILE")
+    if [ "$RATE_DATE" = "$TODAY" ]; then
+        if [ "$RATE_COUNT" -ge 20 ]; then
+            log "WARNUNG: Tageslimit erreicht ($RATE_COUNT Interaktionen)"
+            send_telegram "⚠️ Hinweis: Bereits $RATE_COUNT Interaktionen heute."
+        fi
+        echo -e "$TODAY\n$((RATE_COUNT + 1))" > "$RATE_FILE"
+    else
+        echo -e "$TODAY\n1" > "$RATE_FILE"
+    fi
+else
+    echo -e "$TODAY\n1" > "$RATE_FILE"
+fi
+
+#-------------------------------------------------------------------------------
+# Session erstellen
+#-------------------------------------------------------------------------------
+# Sichere Permissions setzen VOR Schreiben
+( umask 077 && touch "$SESSION_FILE" )
+cat > "$SESSION_FILE" << EOF
+{
+  "id": "$SESSION_ID",
+  "created": "$(date -Iseconds)",
+  "expires": "$(date -Iseconds -d '+24 hours')",
+  "state": "waiting_for_answer",
+  "question": $(echo "$QUESTION" | jq -Rs .),
+  "context": $(echo "$CONTEXT" | jq -Rs .),
+  "interactions": [],
+  "budget_used": 0
+}
+EOF
+chmod 600 "$SESSION_FILE"
+
+log "Session $SESSION_ID erstellt: $QUESTION"
+
+# Markiere Frage als pending (für Bot-Daemon)
+echo "$QUESTION" > "$QUESTION_FILE"
+rm -f "$ANSWER_FILE"
+
+# Sende Frage mit Hinweis
+send_telegram "❓ $QUESTION
+
+💡 _Antworte direkt oder nutze /frage für Rückfragen.
+⏰ Du hast 24 Stunden Zeit._"
+
+#-------------------------------------------------------------------------------
+# Kurzes initiales Warten für schnelle Antworten
+#-------------------------------------------------------------------------------
+ELAPSED=0
+while [ $ELAPSED -lt $INITIAL_WAIT ]; do
+    if [ -f "$ANSWER_FILE" ]; then
+        USER_ANSWER=$(cat "$ANSWER_FILE")
+        rm -f "$ANSWER_FILE" "$QUESTION_FILE"
+        
+        log "Schnelle Antwort erhalten: $USER_ANSWER"
+        
+        # Validiere durch Sekretär-Claude
+        VALIDATED=$(/usr/local/sbin/telegram-secretary "$QUESTION" "$USER_ANSWER")
+        
+        # Update Session
+        jq --arg ans "$USER_ANSWER" --arg val "$VALIDATED" \
+            '.state = "answered" | .interactions += [{"type": "answer", "time": now | todate, "text": $ans, "validated": $val}]' \
+            "$SESSION_FILE" > "$SESSION_FILE.tmp" && chmod 600 "$SESSION_FILE.tmp" && mv "$SESSION_FILE.tmp" "$SESSION_FILE"
+        
+        # Informiere User
+        case "$VALIDATED" in
+            GENEHMIGT:*)
+                send_telegram "✅ Sekretär: Anweisung validiert."
+                ;;
+            ABGELEHNT:*)
+                send_telegram "🛡️ Sekretär: $VALIDATED"
+                ;;
+            RÜCKFRAGE:*)
+                send_telegram "📝 $VALIDATED"
+                ;;
+        esac
+        
+        # Archiviere Session
+        mv "$SESSION_FILE" "$SESSION_DIR/history/${SESSION_ID}.json" 2>/dev/null
+        
+        echo "$VALIDATED"
+        exit 0
+    fi
+    sleep 5
+    ELAPSED=$((ELAPSED + 5))
+done
+
+#-------------------------------------------------------------------------------
+# Kein schnelles Antwort - Session bleibt offen
+#-------------------------------------------------------------------------------
+log "Keine schnelle Antwort - Session $SESSION_ID bleibt offen"
+
+send_telegram "⏳ Kein Problem - die Frage bleibt offen.
+Antworte wenn du bereit bist (noch ~23h Zeit)."
+
+# Log-Rotation (max 1000 Zeilen)
+if [ -f "$LOG" ] && [ $(wc -l < "$LOG" 2>/dev/null || echo 0) -gt 1000 ]; then
+    tail -500 "$LOG" > "$LOG.tmp" && chmod 644 "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+fi
+echo "PENDING:$SESSION_ID"
+exit 0

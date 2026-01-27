@@ -1,0 +1,25 @@
+[Unit]
+Description=Daily Claude Maintenance Service
+Documentation=https://github.com/jleinenbach/raspberry-pi-adsb-docs
+After=network.target
+
+[Service]
+Type=oneshot
+User=pi
+ExecStart=/usr/local/sbin/claude-respond-to-reports
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claude-maintenance
+
+# Security
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log /var/lib/claude-pending /tmp
+
+# Timeout after 30 minutes
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

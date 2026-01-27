@@ -1,0 +1,337 @@
+#!/bin/bash
+#===============================================================================
+# Wächter-Claude: Überwacht Claude-Wartung und repariert bei Problemen
+# Läuft alle 10 Minuten via systemd Timer
+#===============================================================================
+
+set -euo pipefail
+
+# Fix 2026-01-25: source durch sichere Config-Ladung ersetzt
+# Konfiguration
+LOCK_FILE="/var/run/claude-respond.lock"
+HEARTBEAT_FILE="/var/run/claude-respond.heartbeat"
+DIAGNOSE_LOCK="/var/run/wartungs-diagnose.lock"
+LOG_DIR="/var/log/claude-maintenance"
+WATCHDOG_LOG="/var/log/wartungs-watchdog.log"
+MAX_RUNTIME=1200        # 20 Min max Laufzeit
+MAX_HEARTBEAT_AGE=600   # 10 Min ohne Heartbeat = hängt
+MAX_LOG_STALE=600       # 10 Min ohne Log-Änderung = hängt
+COOLDOWN_FILE="/var/run/wartungs-watchdog.cooldown"
+COOLDOWN_SECONDS=1800   # 30 Min Cooldown nach Diagnose
+
+# Sichere Config-Ladung (ohne source)
+TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN_HERE"') || true
+TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID="YOUR_CHAT_ID_HERE"') || true
+
+#-------------------------------------------------------------------------------
+# Logging
+#-------------------------------------------------------------------------------
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$WATCHDOG_LOG"
+}
+
+#-------------------------------------------------------------------------------
+# Telegram-Benachrichtigung
+#-------------------------------------------------------------------------------
+notify() {
+    local message="$1"
+    local emoji="${2:-🔍}"
+    
+    if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+        curl -s --max-time 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="${emoji} *Wartungs-Wächter*
+${message}" \
+            -d parse_mode="Markdown" > /dev/null 2>&1 || true
+    fi
+}
+
+#-------------------------------------------------------------------------------
+# Prüfe ob Diagnose im Cooldown
+#-------------------------------------------------------------------------------
+in_cooldown() {
+    if [ -f "$COOLDOWN_FILE" ]; then
+        local last_run=$(cat "$COOLDOWN_FILE" 2>/dev/null || echo 0)
+        local now=$(date +%s)
+        local age=$((now - last_run))
+        if [ "$age" -lt "$COOLDOWN_SECONDS" ]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+set_cooldown() {
+    date +%s > "$COOLDOWN_FILE"
+}
+
+#-------------------------------------------------------------------------------
+# Prüfe ob Wartung läuft
+#-------------------------------------------------------------------------------
+is_maintenance_running() {
+    if [ -f "$LOCK_FILE" ]; then
+        local pid=$(cat "$LOCK_FILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+get_maintenance_pid() {
+    cat "$LOCK_FILE" 2>/dev/null || echo ""
+}
+
+get_runtime_seconds() {
+    if [ -f "$LOCK_FILE" ]; then
+        local start=$(stat -c %Y "$LOCK_FILE" 2>/dev/null || echo 0)
+        local now=$(date +%s)
+        echo $((now - start))
+    else
+        echo 0
+    fi
+}
+
+#-------------------------------------------------------------------------------
+# Prüfe ob Wartung hängt
+#-------------------------------------------------------------------------------
+is_maintenance_stale() {
+    local now=$(date +%s)
+    
+    # Prüfe Heartbeat (primär)
+    if [ -f "$HEARTBEAT_FILE" ]; then
+        local heartbeat=$(cat "$HEARTBEAT_FILE" 2>/dev/null || echo 0)
+        local age=$((now - heartbeat))
+        if [ "$age" -gt "$MAX_HEARTBEAT_AGE" ]; then
+            log "WARNUNG: Heartbeat veraltet (${age}s > ${MAX_HEARTBEAT_AGE}s)"
+            return 0
+        fi
+    fi
+    
+    # Prüfe Log-Datei Änderungszeit (sekundär)
+    local today_log="$LOG_DIR/response-$(date +%Y-%m-%d).log"
+    if [ -f "$today_log" ]; then
+        local log_mtime=$(stat -c %Y "$today_log" 2>/dev/null || echo 0)
+        local log_age=$((now - log_mtime))
+        if [ "$log_age" -gt "$MAX_LOG_STALE" ]; then
+            log "WARNUNG: Log unverändert seit ${log_age}s"
+            return 0
+        fi
+    fi
+    
+    # Prüfe absolute Laufzeit
+    local runtime=$(get_runtime_seconds)
+    if [ "$runtime" -gt "$MAX_RUNTIME" ]; then
+        log "WARNUNG: Laufzeit überschritten (${runtime}s > ${MAX_RUNTIME}s)"
+        return 0
+    fi
+    
+    return 1
+}
+
+#-------------------------------------------------------------------------------
+# Prüfe auf Fehler in letztem Log
+#-------------------------------------------------------------------------------
+check_recent_errors() {
+    local today_log="$LOG_DIR/response-$(date +%Y-%m-%d).log"
+    
+    if [ ! -f "$today_log" ]; then
+        return 1  # Kein Log = kein Fehler erkannt
+    fi
+    
+    # Suche nach Fehlermeldungen
+    if grep -qE 'FEHLER|ERROR|Exit code [1-9]|Traceback|exception|integer expression expected' "$today_log" 2>/dev/null; then
+        # Prüfe ob Fehler bereits behandelt wurde (suche nach "Korrektur abgeschlossen")
+        if grep -q "Korrektur abgeschlossen\|behoben\|GEFIXT" "$today_log" 2>/dev/null; then
+            return 1  # Bereits behandelt
+        fi
+        return 0  # Unbehandelter Fehler
+    fi
+    
+    return 1
+}
+
+get_last_error() {
+    local today_log="$LOG_DIR/response-$(date +%Y-%m-%d).log"
+    grep -E 'FEHLER|ERROR|Exit code [1-9]|Traceback|exception|integer expression expected' "$today_log" 2>/dev/null | tail -3 || echo "Unbekannter Fehler"
+}
+
+#-------------------------------------------------------------------------------
+# Prüfe auf verwaiste Lock-Datei
+#-------------------------------------------------------------------------------
+check_orphan_lock() {
+    if [ -f "$LOCK_FILE" ]; then
+        local pid=$(cat "$LOCK_FILE" 2>/dev/null)
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            log "WARNUNG: Verwaiste Lock-Datei gefunden (PID $pid existiert nicht)"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+#-------------------------------------------------------------------------------
+# Diagnose-Claude starten
+#-------------------------------------------------------------------------------
+start_diagnose_claude() {
+    local problem_type="$1"
+    local details="$2"
+    
+    # Eigener Lock um Doppelstart zu verhindern
+    exec 200>"$DIAGNOSE_LOCK"
+    if ! flock -n 200; then
+        log "INFO: Diagnose läuft bereits"
+        return 0
+    fi
+    
+    log "DIAGNOSE: Starte Diagnose-Claude ($problem_type)"
+    notify "Starte Diagnose...
+Problem: $problem_type
+$details" "🔍"
+    
+    local today_log="$LOG_DIR/response-$(date +%Y-%m-%d).log"
+    local prompt=""
+    
+    case "$problem_type" in
+        "hanging")
+            local pid=$(get_maintenance_pid)
+            local runtime=$(($(get_runtime_seconds) / 60))
+            prompt="WÄCHTER-ALARM: Die Claude-Wartung hängt!
+
+Situation:
+- PID: $pid
+- Läuft seit: ${runtime} Minuten
+- Details: $details
+
+Deine Aufgaben:
+1. Lies /home/pi/CLAUDE.md für Kontext
+2. Analysiere $today_log - was war der letzte Schritt?
+3. Prüfe mit 'ps aux | grep $pid' ob der Prozess wirklich hängt
+4. Wenn ja: Beende mit 'kill $pid' und entferne $LOCK_FILE
+5. Analysiere warum es gehangen hat
+6. Führe notwendige Reparaturen durch
+7. Schreibe eine Zusammenfassung ans Ende von $today_log
+8. Sende [TELEGRAM:OK] wenn erfolgreich
+
+WICHTIG: Du bist der Wächter-Claude. Sei entschlossen aber vorsichtig."
+            ;;
+            
+        "error")
+            prompt="WÄCHTER-ALARM: Die letzte Wartung hatte Fehler!
+
+Fehler gefunden:
+$details
+
+Deine Aufgaben:
+1. Lies /home/pi/CLAUDE.md für Kontext
+2. Analysiere $today_log vollständig
+3. Finde die Fehlerursache
+4. Behebe das Problem (Skript-Bugs, Konfigurationsfehler, etc.)
+5. Dokumentiere in CLAUDE.md Lessons Learned falls relevant
+6. Schreibe eine Zusammenfassung ans Ende von $today_log
+7. Sende [TELEGRAM:OK] wenn erfolgreich
+
+WICHTIG: Der grep -c Bug wurde heute schon behoben - prüfe ob es neue Probleme gibt."
+            ;;
+            
+        "orphan_lock")
+            prompt="WÄCHTER-ALARM: Verwaiste Lock-Datei gefunden!
+
+Situation:
+- Lock-Datei existiert: $LOCK_FILE
+- Aber Prozess ist nicht mehr aktiv
+- Details: $details
+
+Deine Aufgaben:
+1. Lies /home/pi/CLAUDE.md für Kontext
+2. Prüfe warum der Prozess beendet wurde (journalctl, dmesg)
+3. Entferne die verwaiste Lock-Datei: rm $LOCK_FILE
+4. Prüfe ob Heartbeat-Datei existiert und entferne sie: rm -f $HEARTBEAT_FILE
+5. Analysiere $today_log auf unvollständige Arbeiten
+6. Führe notwendige Aufräumarbeiten durch
+7. Sende [TELEGRAM:OK] wenn erfolgreich"
+            ;;
+    esac
+    
+    # Claude starten
+    local output_file="$LOG_DIR/diagnose-$(date +%Y-%m-%d-%H%M%S).log"
+    
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Diagnose-Claude gestartet" >> "$today_log"
+    echo "========================================" >> "$today_log"
+    
+    # Claude mit Budget-Limit ausführen
+    local claude_output
+    if claude_output=$(echo "$prompt" | timeout 900 /home/pi/.local/bin/claude -p \
+        --dangerously-skip-permissions \
+        --allowedTools "Bash Read Grep Edit" \
+        --max-turns 15 2>&1); then
+        
+        echo "$claude_output" >> "$output_file"
+        echo "$claude_output" >> "$today_log"
+        
+        if echo "$claude_output" | grep -q '\[TELEGRAM:OK\]'; then
+            log "DIAGNOSE: Erfolgreich abgeschlossen"
+            notify "Diagnose erfolgreich abgeschlossen.
+Details in /log" "✅"
+        else
+            log "DIAGNOSE: Abgeschlossen (ohne explizites OK)"
+            notify "Diagnose abgeschlossen.
+Bitte /log prüfen" "⚠️"
+        fi
+    else
+        local exit_code=$?
+        log "DIAGNOSE: Fehlgeschlagen (Exit $exit_code)"
+        notify "Diagnose fehlgeschlagen (Exit $exit_code)
+Manuelle Prüfung erforderlich!" "🔴"
+        echo "[FEHLER] Diagnose-Claude Exit $exit_code" >> "$today_log"
+    fi
+    
+    echo "========================================" >> "$today_log"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Diagnose-Claude beendet" >> "$today_log"
+    
+    set_cooldown
+    flock -u 200
+}
+
+#-------------------------------------------------------------------------------
+# Hauptlogik
+#-------------------------------------------------------------------------------
+main() {
+    # Cooldown prüfen
+    if in_cooldown; then
+        log "INFO: Im Cooldown, überspringe"
+        exit 0
+    fi
+    
+    log "INFO: Wächter-Prüfung gestartet"
+    
+    # Fall 1: Verwaiste Lock-Datei
+    if check_orphan_lock; then
+        start_diagnose_claude "orphan_lock" "Lock-Datei ohne aktiven Prozess"
+        exit 0
+    fi
+    
+    # Fall 2: Wartung läuft - prüfe auf Hänger
+    if is_maintenance_running; then
+        local runtime=$(($(get_runtime_seconds) / 60))
+        log "INFO: Wartung läuft seit ${runtime} Min"
+        
+        if is_maintenance_stale; then
+            start_diagnose_claude "hanging" "Wartung reagiert nicht mehr"
+        else
+            log "INFO: Wartung läuft normal"
+        fi
+        exit 0
+    fi
+    
+    # Fall 3: Wartung läuft nicht - prüfe auf Fehler
+    if check_recent_errors; then
+        local errors=$(get_last_error)
+        start_diagnose_claude "error" "$errors"
+        exit 0
+    fi
+    
+    log "INFO: Alles OK"
+}
+
+main "$@"

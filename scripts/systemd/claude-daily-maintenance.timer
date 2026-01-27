@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Claude Maintenance Timer
+Documentation=https://github.com/jleinenbach/raspberry-pi-adsb-docs
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

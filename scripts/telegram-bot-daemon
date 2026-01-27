@@ -1,0 +1,611 @@
+#!/bin/bash
+set -o pipefail
+#===============================================================================
+# Telegram Bot Daemon für ADS-B Feeder
+# Befehle: /status, /stats, /log, /wartung, /do
+#===============================================================================
+
+# Sichere Config-Ladung (ohne source)
+TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN_HERE"')
+TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID="YOUR_CHAT_ID_HERE"')
+
+LAST_UPDATE_FILE="/var/run/telegram-bot-last-update"
+ANSWER_FILE="/var/run/telegram-bot-answer"
+QUESTION_FILE="/var/run/telegram-bot-question"
+SESSION_DIR="/var/lib/claude-pending"
+SESSION_FILE="$SESSION_DIR/session.json"
+LOG_FILE="/var/log/telegram-bot.log"
+DO_LOCK="/var/run/telegram-do.lock"
+
+MAX_MSG_LEN=1000
+MAINTENANCE_LOCK="/var/run/claude-respond.lock"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
+#-------------------------------------------------------------------------------
+# Wartungs-Status prüfen
+#-------------------------------------------------------------------------------
+is_maintenance_running() {
+    if [ -f "$MAINTENANCE_LOCK" ]; then
+        local pid=$(cat "$MAINTENANCE_LOCK" 2>/dev/null)
+        if kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+get_maintenance_duration() {
+    if [ -f "$MAINTENANCE_LOCK" ]; then
+        local start=$(stat -c %Y "$MAINTENANCE_LOCK" 2>/dev/null)
+        local now=$(date +%s)
+        local dur=$((now - start))
+        echo "$((dur / 60))min $((dur % 60))s"
+    fi
+}
+
+#-------------------------------------------------------------------------------
+# Telegram Nachricht senden (mit automatischer Aufteilung bei >4000 Zeichen)
+#-------------------------------------------------------------------------------
+MAX_TELEGRAM_LEN=4000
+
+send_message_raw() {
+    curl -s --max-time 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHAT_ID}" \
+        -d text="$1" \
+        -d parse_mode="Markdown" > /dev/null 2>&1
+}
+
+send_message() {
+    local msg="$1"
+    local len=${#msg}
+
+    # Kurze Nachricht: direkt senden
+    if [ $len -le $MAX_TELEGRAM_LEN ]; then
+        send_message_raw "$msg"
+        return
+    fi
+
+    # Lange Nachricht: aufteilen
+    local parts=()
+    local remaining="$msg"
+
+    while [ ${#remaining} -gt $MAX_TELEGRAM_LEN ]; do
+        local chunk="${remaining:0:$MAX_TELEGRAM_LEN}"
+        local cut_pos=$MAX_TELEGRAM_LEN
+
+        # Versuche an Doppel-Newline (Absatz) zu trennen
+        local last_para=$(echo "$chunk" | grep -bo $'\n\n' 2>/dev/null | tail -1 | cut -d: -f1)
+        if [ -n "$last_para" ] && [ "$last_para" -gt 2000 ]; then
+            cut_pos=$((last_para + 2))
+        else
+            # Versuche an einfachem Newline zu trennen
+            local last_nl=$(echo "$chunk" | grep -bo $'\n' 2>/dev/null | tail -1 | cut -d: -f1)
+            if [ -n "$last_nl" ] && [ "$last_nl" -gt 2000 ]; then
+                cut_pos=$((last_nl + 1))
+            fi
+        fi
+
+        parts+=("${remaining:0:$cut_pos}")
+        remaining="${remaining:$cut_pos}"
+    done
+
+    # Rest hinzufuegen
+    [ -n "$remaining" ] && parts+=("$remaining")
+
+    # Teile senden mit Nummerierung
+    local total=${#parts[@]}
+    local i=1
+    for part in "${parts[@]}"; do
+        if [ $total -gt 1 ]; then
+            send_message_raw "($i/$total)
+$part"
+        else
+            send_message_raw "$part"
+        fi
+        ((i++))
+        # Kurze Pause fuer korrekte Reihenfolge
+        [ $i -le $total ] && sleep 0.3
+    done
+}
+
+sanitize_input() {
+    local input="$1"
+    input="${input:0:$MAX_MSG_LEN}"
+    input=$(echo "$input" | tr -d '\000-\011\013-\037')
+    echo "$input"
+}
+
+#-------------------------------------------------------------------------------
+# Session-Status prüfen
+#-------------------------------------------------------------------------------
+has_open_session() {
+    if [ -f "$SESSION_FILE" ]; then
+        local expires=$(jq -r '.expires' "$SESSION_FILE" 2>/dev/null)
+        local expires_ts=$(date -d "$expires" +%s 2>/dev/null || echo 0)
+        local now_ts=$(date +%s)
+        if [ "$now_ts" -lt "$expires_ts" ]; then
+            return 0
+        else
+            local sid=$(jq -r '.id' "$SESSION_FILE")
+            mv "$SESSION_FILE" "$SESSION_DIR/history/${sid}-expired.json" 2>/dev/null
+            return 1
+        fi
+    fi
+    return 1
+}
+
+get_session_remaining() {
+    local expires=$(jq -r '.expires' "$SESSION_FILE" 2>/dev/null)
+    local expires_ts=$(date -d "$expires" +%s 2>/dev/null || echo 0)
+    local now_ts=$(date +%s)
+    local remaining=$((expires_ts - now_ts))
+    if [ "$remaining" -gt 3600 ]; then
+        echo "$((remaining / 3600))h"
+    else
+        echo "$((remaining / 60))min"
+    fi
+}
+
+handle_abbrechen() {
+    if has_open_session; then
+        local sid=$(jq -r '.id' "$SESSION_FILE")
+        jq '.state = "cancelled"' "$SESSION_FILE" > "$SESSION_FILE.tmp" && chmod 600 "$SESSION_FILE.tmp" && mv "$SESSION_FILE.tmp" "$SESSION_FILE"
+        mv "$SESSION_FILE" "$SESSION_DIR/history/${sid}-cancelled.json" 2>/dev/null
+        rm -f "$QUESTION_FILE" "$ANSWER_FILE"
+        send_message "❌ Session abgebrochen."
+        log "Session $sid abgebrochen"
+    else
+        send_message "💬 Keine offene Session."
+    fi
+}
+
+#-------------------------------------------------------------------------------
+# /do - Direkte Anweisung an Claude (schneller als /wartung)
+#-------------------------------------------------------------------------------
+handle_do() {
+    local anweisung="$1"
+    
+    if [ -z "$anweisung" ]; then
+        send_message "⚡ Bitte Anweisung angeben:
+/do Starte piaware neu
+/do Prüfe AppArmor-Status
+/do Zeige SSH-Konfiguration"
+        return
+    fi
+    
+    
+    # Schnelle Blacklist-Prüfung (ohne Claude)
+    local BLACKLIST="rm -rf /|mkfs|dd if=|format|fdisk|:(){:|chmod -R 777 /|> /dev/sd"
+    for pattern in $BLACKLIST; do
+        if echo "$anweisung" | grep -qi "$pattern"; then
+            send_message "🛡️ *Abgelehnt:* Gefährlicher Befehl erkannt."
+            log "/do BLOCKED: $anweisung"
+            return
+        fi
+    done
+    
+    # In Queue einfügen
+    local QUEUE_FILE="/var/lib/claude-pending/do-queue.json"
+    local QUEUE_ID=$(date +%s%N | cut -c1-13)
+    local TIMESTAMP=$(date -Iseconds)
+    
+    # Queue initialisieren falls nicht vorhanden
+    [ ! -f "$QUEUE_FILE" ] && echo "[]" > "$QUEUE_FILE"
+    
+    # Eintrag hinzufügen
+    local NEW_ENTRY=$(jq -n --arg cmd "$anweisung" --arg ts "$TIMESTAMP" --arg id "$QUEUE_ID" \
+        '{command: $cmd, timestamp: $ts, id: $id}')
+    jq --argjson entry "$NEW_ENTRY" '. + [$entry]' "$QUEUE_FILE" > "$QUEUE_FILE.tmp" \
+        && mv "$QUEUE_FILE.tmp" "$QUEUE_FILE"
+    
+    local QUEUE_LEN=$(jq length "$QUEUE_FILE")
+    
+    send_message "📥 *In Queue (#$QUEUE_ID)*
+Position: $QUEUE_LEN
+Anweisung: _${anweisung}_
+
+⏳ Wird verarbeitet sobald Claude frei ist (max 2 Min)."
+    
+    log "/do QUEUED #$QUEUE_ID: $anweisung"
+    
+    # Sofort Worker triggern falls Claude frei
+    if ! pgrep -f "claude -p" > /dev/null 2>&1; then
+        systemctl start do-queue-worker.service &
+    fi
+}
+
+#-------------------------------------------------------------------------------
+# Firmware-Status prüfen
+#-------------------------------------------------------------------------------
+get_firmware_status() {
+    local eeprom_output=$(sudo rpi-eeprom-update 2>/dev/null)
+    local bootloader_status=$(echo "$eeprom_output" | grep -E "^BOOTLOADER:" | awk '{print $2,$3,$4}')
+    local vl805_status=$(echo "$eeprom_output" | grep -E "^\s*VL805:" | awk '{print $2,$3,$4}')
+
+    local fw_icon="🟢"
+    if echo "$bootloader_status" | grep -qi "update available"; then
+        fw_icon="🟡"
+    fi
+    if echo "$vl805_status" | grep -qi "update available"; then
+        fw_icon="🟡"
+    fi
+
+    if [ "$fw_icon" = "🟢" ]; then
+        echo "${fw_icon} Aktuell"
+    else
+        echo "${fw_icon} Update verfügbar"
+    fi
+}
+
+#-------------------------------------------------------------------------------
+# /status - Kompakter Health-Check mit Ampeln
+#-------------------------------------------------------------------------------
+get_status() {
+    local uptime_str=$(uptime -p | sed 's/up //' | sed 's/ days\?/d/;s/ hours\?/h/;s/ minutes\?/m/' | sed 's/, //g')
+    local ram_pct=$(free | awk '/Mem:/ {printf "%.0f", $3/$2*100}')
+    local ram_icon="🟢"
+    [ "$ram_pct" -ge 50 ] && ram_icon="🟡"
+    [ "$ram_pct" -ge 70 ] && ram_icon="🟠"
+    [ "$ram_pct" -ge 85 ] && ram_icon="🔴"
+
+    local cpu_load=$(cat /proc/loadavg | awk '{print $1}')
+    local cpu_pct=$(awk "BEGIN {printf \"%.0f\", $cpu_load * 25}")
+    local cpu_icon="🟢"
+    [ "$cpu_pct" -ge 50 ] && cpu_icon="🟡"
+    [ "$cpu_pct" -ge 70 ] && cpu_icon="🟠"
+    [ "$cpu_pct" -ge 85 ] && cpu_icon="🔴"
+
+    local rtl=$(lsusb | grep -qi rtl && echo "OK" || echo "FEHLT")
+    local temp=$(vcgencmd measure_temp 2>/dev/null | grep -oP "[0-9.]+" || echo "0")
+    local signal=$(cat /run/readsb/stats.json 2>/dev/null | jq -r '.last1min.local.peak_signal // -99' 2>/dev/null)
+    local sig_int=${signal%.*}
+
+    local sd_errors=$(dmesg | grep -ciE 'mmcblk.*error|mmcblk.*failed|mmc0.*timeout')
+    local sd_writes=$(awk '{print int($7 * 512 / 1024 / 1024)}' /sys/block/mmcblk0/stat 2>/dev/null || echo '0')
+    local sd_icon="🟢"
+    [ "$sd_errors" -gt 0 ] && sd_icon="🔴"
+
+    local SERVICES="mlathub readsb piaware fr24feed adsbexchange-feed adsbexchange-mlat adsbexchange-stats tar1090 adsbfi-feed adsbfi-mlat opensky-feeder theairtraffic-feed rbfeeder airplanes-feed airplanes-mlat pfclient dragonsync"
+    local feed_ok=0 feed_fail="" feed_total=0
+    for svc in $SERVICES; do
+        ((feed_total++))
+        if systemctl is-active "$svc" &>/dev/null; then
+            ((feed_ok++))
+        else
+            feed_fail+=" ${svc%%-*}"
+        fi
+    done
+    local mlat_status=""
+    if systemctl is-enabled adsbexchange-mlat &>/dev/null; then
+        local mlat_adsbx=$(ss -tn state established 2>/dev/null | grep -qE '(34\.218|54\.244).*(31090|64590)' && echo "OK" || echo "NEIN")
+        local mlat_x_icon=$([[ "$mlat_adsbx" == "OK" ]] && echo "🟢" || echo "🔴")
+        mlat_status+="${mlat_x_icon} ADSBx"
+    fi
+    if systemctl is-enabled adsbfi-mlat &>/dev/null; then
+        local mlat_fi=$(ss -tn state established '( dport = :31090 )' 2>/dev/null | grep -q "65\.109" && echo "OK" || echo "NEIN")
+        local mlat_fi_icon=$([[ "$mlat_fi" == "OK" ]] && echo "🟢" || echo "🔴")
+        [ -n "$mlat_status" ] && mlat_status+=" | "
+        mlat_status+="${mlat_fi_icon} adsb.fi"
+    fi
+    if pgrep -f "fa-mlat-client" &>/dev/null; then
+        [ -n "$mlat_status" ] && mlat_status+=" | "
+        mlat_status+="🟢 FA"
+    fi
+    if systemctl is-enabled airplanes-mlat &>/dev/null; then
+        local mlat_air=$(ss -tn state established 2>/dev/null | grep -qE "78\.46\.234\.[0-9]+:31090|65\.109\.[0-9]+\.[0-9]+:31090" && echo "OK" || echo "NEIN")
+        local mlat_air_icon=$([[ "$mlat_air" == "OK" ]] && echo "🟢" || echo "🔴")
+        [ -n "$mlat_status" ] && mlat_status+=" | "
+        mlat_status+="${mlat_air_icon} airpl"
+    fi
+    [ -z "$mlat_status" ] && mlat_status="Keine konfiguriert"
+
+    local tat_ok=$(curl -s --max-time 3 "https://theairtraffic.com/iapi/feeder_status" 2>/dev/null | grep -q "ADS-B feed detected" && echo "OK" || echo "NEIN")
+    local rtl_icon=$([[ "$rtl" == "OK" ]] && echo "🟢" || echo "🔴")
+    local temp_int=${temp%.*}
+    local temp_icon="🟢"
+    [ "$temp_int" -ge 55 ] 2>/dev/null && temp_icon="🟡"
+    [ "$temp_int" -ge 65 ] 2>/dev/null && temp_icon="🟠"
+    [ "$temp_int" -ge 75 ] 2>/dev/null && temp_icon="🔴"
+    local sig_icon="🟢"
+    [ "$sig_int" -ge 0 ] 2>/dev/null && sig_icon="🔴"
+    [ "$sig_int" -lt -20 ] 2>/dev/null && sig_icon="🟡"
+    [ "$sig_int" -lt -30 ] 2>/dev/null && sig_icon="🔴"
+    local feed_icon="🟢"
+    [ "$feed_ok" -lt "$feed_total" ] && feed_icon="🟡"
+    [ "$feed_ok" -lt 6 ] && feed_icon="🔴"
+    local tat_icon=$([[ "$tat_ok" == "OK" ]] && echo "🟢" || echo "🔴")
+
+    local session_info=""
+    if is_maintenance_running; then
+        local dur=$(get_maintenance_duration)
+        session_info="
+
+*Claude*
+🔧 Wartung läuft seit $dur"
+    elif [ -f "$DO_LOCK" ] && kill -0 "$(cat "$DO_LOCK" 2>/dev/null)" 2>/dev/null; then
+        session_info="
+
+*Claude*
+⚡ /do Befehl läuft"
+    elif has_open_session; then
+        local remaining=$(get_session_remaining)
+        session_info="
+
+*Claude*
+⏳ Frage offen (noch $remaining)"
+    fi
+
+    echo "📡 *System Health*
+
+*System*
+⏱ ${uptime_str} | ${cpu_icon} CPU ${cpu_load} | ${ram_icon} RAM ${ram_pct}%
+
+*Hardware*
+${rtl_icon} SDR | ${temp_icon} ${temp}°C | ${sig_icon} ${signal}dB
+
+*SD-Karte*
+${sd_icon} ${sd_writes}MB seit Boot | Fehler: ${sd_errors}
+
+*Feeder* (${feed_ok}/${feed_total})
+${feed_icon} $([ -z "$feed_fail" ] && echo "Alle aktiv" || echo "Fehlt:$feed_fail")
+
+*MLAT Sync*
+${mlat_status}
+
+*Extern*
+${tat_icon} TheAirTraffic
+
+*Firmware*
+$(get_firmware_status)${session_info}"
+}
+
+#-------------------------------------------------------------------------------
+# /stats - Statistiken
+#-------------------------------------------------------------------------------
+get_stats() {
+    local stats=$(cat /run/readsb/stats.json 2>/dev/null)
+    local aircraft=$(cat /run/readsb/aircraft.json 2>/dev/null | jq '.aircraft | length' 2>/dev/null || echo "?")
+    local msg_rate=$(echo "$stats" | jq -r '.last1min.messages // 0' 2>/dev/null)
+    msg_rate=$((msg_rate / 60))
+    local tracks_today=$(echo "$stats" | jq -r '.total.tracks.all // 0' 2>/dev/null)
+    local positions=$(echo "$stats" | jq -r '.last1min.cpr.global_ok // 0' 2>/dev/null)
+    local range_now=$(echo "$stats" | jq -r '.last1min.max_distance // 0' 2>/dev/null)
+    local range_max=$(echo "$stats" | jq -r '.total.max_distance // 0' 2>/dev/null)
+    range_now=$((range_now / 1852))
+    range_max=$((range_max / 1852))
+
+    local mlat_results=""
+    if ss -tn state established 2>/dev/null | grep -q "127.0.0.1:30154"; then
+        mlat_results+="🟢 ADSBx"
+    elif pgrep -f "adsbexchange.*mlat" &>/dev/null; then
+        mlat_results+="🟡 ADSBx"
+    fi
+    if ss -tn state established 2>/dev/null | grep -q "127.0.0.1:30169"; then
+        [ -n "$mlat_results" ] && mlat_results+=" | "
+        mlat_results+="🟢 adsb.fi"
+    elif pgrep -f "adsbfi.*mlat" &>/dev/null; then
+        [ -n "$mlat_results" ] && mlat_results+=" | "
+        mlat_results+="🟡 adsb.fi"
+    fi
+    if pgrep -f "fa-mlat-client" &>/dev/null; then
+        [ -n "$mlat_results" ] && mlat_results+=" | "
+        mlat_results+="🟢 FA"
+    fi
+    [ -z "$mlat_results" ] && mlat_results="Keine aktiv"
+
+    echo "📊 *ADS-B Statistiken*
+
+*Aktuell*
+✈️ Flugzeuge: ${aircraft}
+📨 ${msg_rate} msg/sec
+📍 ${positions} pos/min
+📡 Reichweite: ${range_now} nm
+
+*Seit Start*
+🛫 Flugzeuge: ${tracks_today}
+📡 Max: ${range_max} nm
+
+*MLAT Rückkanal*
+${mlat_results}"
+}
+
+#-------------------------------------------------------------------------------
+# /log(s) - Letzte Wartung
+#-------------------------------------------------------------------------------
+get_log() {
+    local logfile="/var/log/claude-maintenance/response-$(date +%Y-%m-%d).log"
+    local msg=""
+    
+    if is_maintenance_running; then
+        local dur=$(get_maintenance_duration)
+        msg="🔧 *Wartung läuft* (${dur})
+
+"
+    fi
+    
+    if [ -f "$logfile" ]; then
+        local content=$(tail -30 "$logfile" | tail -c 3500)
+        if [ -n "$content" ]; then
+            msg="${msg}📋 *Log*
+\`\`\`
+${content}
+\`\`\`"
+        else
+            msg="${msg}📋 Log ist leer."
+        fi
+    else
+        msg="${msg}📋 Heute noch keine Wartung."
+    fi
+    
+    echo "$msg"
+}
+
+#-------------------------------------------------------------------------------
+# /wartung - Claude-Wartung starten
+#-------------------------------------------------------------------------------
+start_maintenance() {
+    local instruction="$1"
+    local instr_file="/var/lib/claude-pending/user-instruction.txt"
+    
+    if is_maintenance_running; then
+        local dur=$(get_maintenance_duration)
+        send_message "⚠️ Wartung läuft bereits seit $dur. Warte auf Abschluss oder nutze /log für Status."
+        return
+    fi
+    
+    if [ -n "$instruction" ]; then
+        echo "$instruction" > "$instr_file"
+        send_message "🔧 *Wartung gestartet*
+Anweisung: _${instruction}_
+⏳ Dies kann einige Minuten dauern..."
+        log "Wartung mit Anweisung: $instruction"
+    else
+        rm -f "$instr_file"
+        send_message "🔧 *Wartung gestartet*
+⏳ Dies kann einige Minuten dauern..."
+        log "Wartung manuell gestartet"
+    fi
+    
+    nohup bash -c '
+        # HINWEIS: source hier notwendig da Subshell, Config ist root-kontrolliert
+        source /etc/telegram-notify.conf
+        START_TIME=$(date +%s)
+        
+        (
+            sleep 120
+            if [ -f /var/run/claude-respond.lock ]; then
+                DUR=$(( ($(date +%s) - START_TIME) / 60 ))
+                curl -s --max-time 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                    -d chat_id="${TELEGRAM_CHAT_ID}" \
+                    -d text="⏳ Wartung läuft seit ${DUR} min... (arbeitet noch)" \
+                    -d parse_mode="Markdown" > /dev/null 2>&1
+            fi
+        ) &
+        WATCHER_PID=$!
+        
+        /usr/local/sbin/claude-respond-to-reports
+        EXIT=$?
+        
+        kill $WATCHER_PID 2>/dev/null
+        
+        END_TIME=$(date +%s)
+        DURATION=$(( (END_TIME - START_TIME) / 60 ))
+        
+        if [ $EXIT -eq 0 ]; then
+            curl -s --max-time 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d chat_id="${TELEGRAM_CHAT_ID}" \
+                -d text="✅ *Wartung abgeschlossen* (${DURATION} min)
+/log für Details" \
+                -d parse_mode="Markdown" > /dev/null
+        else
+            curl -s --max-time 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d chat_id="${TELEGRAM_CHAT_ID}" \
+                -d text="⚠️ *Wartung fehlgeschlagen* (Exit: $EXIT, ${DURATION} min)
+/log für Fehlerdetails" \
+                -d parse_mode="Markdown" > /dev/null
+        fi
+    ' &>/dev/null &
+}
+
+#-------------------------------------------------------------------------------
+# Befehlsverarbeitung
+#-------------------------------------------------------------------------------
+handle_command() {
+    local text="$1"
+    text=$(sanitize_input "$text")
+    
+    local cmd=$(echo "$text" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
+    local args=$(echo "$text" | cut -d' ' -f2- -s)
+
+    case "$cmd" in
+        /start|/help|/hilfe)
+            local help_text="🤖 *ADS-B Feeder Bot*
+
+/status - System Health
+/stats - ADS-B Statistiken
+/log - Wartungs-Log
+
+*Claude-Befehle:*
+/do <anweisung> - Schnelle Anweisung
+/wartung [text] - Volle Wartung"
+            if has_open_session; then
+                help_text+="
+
+*Session offen:*
+/abbrechen - Session abbrechen
+_Oder einfach antworten_"
+            fi
+            send_message "$help_text"
+            return
+            ;;
+        /status)
+            send_message "$(get_status)"
+            return
+            ;;
+        /stats)
+            send_message "$(get_stats)"
+            return
+            ;;
+        /log|/logs)
+            send_message "$(get_log)"
+            return
+            ;;
+        /do)
+            handle_do "$args"
+            return
+            ;;
+        /wartung|/maintenance)
+            start_maintenance "$args"
+            return
+            ;;
+        /abbrechen|/cancel)
+            handle_abbrechen
+            return
+            ;;
+        /*)
+            send_message "❓ Unbekannt. /help"
+            return
+            ;;
+    esac
+
+    if has_open_session; then
+        echo "$text" > "$ANSWER_FILE"
+        send_message "✅ Antwort erhalten, wird validiert..."
+        log "Antwort auf offene Session: $text"
+    else
+        send_message "💬 Keine Frage offen. /help"
+    fi
+}
+
+#-------------------------------------------------------------------------------
+# Hauptschleife
+#-------------------------------------------------------------------------------
+mkdir -p /var/run
+[ -f "$LAST_UPDATE_FILE" ] || echo "0" > "$LAST_UPDATE_FILE"
+log "Bot-Daemon gestartet"
+
+while true; do
+    LAST_UPDATE=$(cat "$LAST_UPDATE_FILE")
+    RESPONSE=$(curl -s --max-time 35 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=$((LAST_UPDATE + 1))&timeout=30" 2>/dev/null)
+
+    if [ $? -ne 0 ] || ! echo "$RESPONSE" | jq -e '.ok' > /dev/null 2>&1; then
+        sleep 10
+        continue
+    fi
+
+    echo "$RESPONSE" | jq -c '.result[]' 2>/dev/null | while IFS= read -r update; do
+        UPDATE_ID=$(echo "$update" | jq -r '.update_id')
+        CHAT_ID=$(echo "$update" | jq -r '.message.chat.id // empty')
+        TEXT=$(echo "$update" | jq -r '.message.text // empty')
+
+        echo "$UPDATE_ID" > "$LAST_UPDATE_FILE"
+
+        if [ "$CHAT_ID" = "$TELEGRAM_CHAT_ID" ] && [ -n "$TEXT" ]; then
+            log "Empfangen: $TEXT"
+            handle_command "$TEXT"
+        fi
+    done
+done

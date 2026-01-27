@@ -1,0 +1,22 @@
+[Unit]
+Description=Wartungs Watchdog Service
+Documentation=https://github.com/jleinenbach/raspberry-pi-adsb-docs
+After=network.target
+
+[Service]
+Type=oneshot
+User=pi
+ExecStart=/usr/local/sbin/wartungs-watchdog
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=wartungs-watchdog
+
+# Security
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log /tmp
+
+[Install]
+WantedBy=multi-user.target

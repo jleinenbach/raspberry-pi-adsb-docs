@@ -9,5 +9,6 @@
 
 # Private/sensitive data (falls vorhanden)
 *secret*
+!scripts/telegram-secretary
 *password*
 *token*

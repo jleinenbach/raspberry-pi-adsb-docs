@@ -1,0 +1,115 @@
+#!/bin/bash
+set -o pipefail
+#===============================================================================
+# SD-Karten Health Check
+# - Tägliche Schreibstatistik
+# - I/O-Fehler Erkennung
+# Fix 2026-01-25: Source-Injection verhindert
+#===============================================================================
+
+STATS_FILE="/var/lib/sd-health/stats.dat"
+LOG_FILE="/var/lib/sd-health/history.log"
+TELEGRAM_CONF="/etc/telegram-notify.conf"
+
+mkdir -p /var/lib/sd-health
+
+# Aktuelle Schreibmenge (in Sektoren → MB)
+get_writes_mb() {
+    local sectors=$(awk '{print $7}' /sys/block/mmcblk0/stat)
+    echo $((sectors * 512 / 1024 / 1024))
+}
+
+# I/O-Fehler aus dmesg
+check_io_errors() {
+    dmesg | grep -iE "mmcblk.*error|mmcblk.*failed|mmcblk.*I/O|mmc0.*timeout" | tail -5
+}
+
+# Telegram-Warnung
+notify() {
+    [ ! -f "$TELEGRAM_CONF" ] && return
+    # Sichere Config-Ladung
+    TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN_HERE"$TELEGRAM_CONF" 2>/dev/null | cut -d= -f2- | tr -d '"')
+    TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID="YOUR_CHAT_ID_HERE"$TELEGRAM_CONF" 2>/dev/null | cut -d= -f2- | tr -d '"')
+    [ -z "$TELEGRAM_BOT_TOKEN" ] && return
+    
+    curl -s --max-time 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d chat_id="${TELEGRAM_CHAT_ID}" \
+        -d text="$1" \
+        -d parse_mode="Markdown" > /dev/null 2>&1
+}
+
+case "$1" in
+    check)
+        # Täglicher Check (via Timer)
+        current_mb=$(get_writes_mb)
+        today=$(date +%Y-%m-%d)
+        
+        # Letzte Werte laden (sicher, ohne source)
+        if [ -f "$STATS_FILE" ]; then
+            LAST_MB=$(grep "^LAST_MB=" "$STATS_FILE" 2>/dev/null | cut -d= -f2)
+            LAST_DATE=$(grep "^LAST_DATE=" "$STATS_FILE" 2>/dev/null | cut -d= -f2)
+            LAST_MB=${LAST_MB:-0}
+            LAST_DATE=${LAST_DATE:-""}
+        else
+            LAST_MB=0
+            LAST_DATE=""
+        fi
+        
+        # Tägliche Differenz berechnen
+        if [ "$LAST_DATE" = "$today" ]; then
+            daily_mb=$((current_mb - LAST_MB))
+        else
+            # Neuer Tag
+            if [ -n "$LAST_DATE" ] && [ "$LAST_MB" -gt 0 ]; then
+                daily_mb=$((current_mb - LAST_MB))
+                echo "$(date '+%Y-%m-%d %H:%M') | Geschrieben: ${daily_mb} MB" >> "$LOG_FILE"
+                
+                # Warnung bei >5GB/Tag
+                if [ "$daily_mb" -gt 5000 ]; then
+                    notify "⚠️ *SD-Karte*: ${daily_mb} MB in 24h geschrieben - ungewöhnlich hoch!"
+                fi
+            fi
+            LAST_DATE="$today"
+            LAST_MB="$current_mb"
+        fi
+        
+        # Werte speichern
+        echo "LAST_MB=$current_mb" > "$STATS_FILE"
+        echo "LAST_DATE=$today" >> "$STATS_FILE"
+        
+        # I/O-Fehler prüfen
+        errors=$(check_io_errors)
+        if [ -n "$errors" ]; then
+            notify "🔴 *SD-Karte I/O-Fehler*:\n\`\`\`\n$errors\n\`\`\`"
+            echo "$(date '+%Y-%m-%d %H:%M') | I/O-FEHLER: $errors" >> "$LOG_FILE"
+        fi
+        
+        # Log-Rotation (max 500 Zeilen)
+        if [ -f "$LOG_FILE" ] && [ $(wc -l < "$LOG_FILE" 2>/dev/null || echo 0) -gt 500 ]; then
+            tail -250 "$LOG_FILE" > "$LOG_FILE.tmp" && chmod 644 "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+        fi
+        ;;
+        
+    status)
+        echo "=== SD-Karten Status ==="
+        echo "Modell: $(cat /sys/block/mmcblk0/device/name)"
+        echo "Herstelldatum: $(cat /sys/block/mmcblk0/device/date)"
+        echo ""
+        echo "=== Schreibstatistik (seit Boot) ==="
+        current_mb=$(get_writes_mb)
+        echo "Gesamt geschrieben: ${current_mb} MB"
+        echo "Uptime: $(uptime -p)"
+        echo ""
+        echo "=== Historie (letzte 10 Tage) ==="
+        tail -10 "$LOG_FILE" 2>/dev/null || echo "Noch keine Daten"
+        echo ""
+        echo "=== I/O-Fehler ==="
+        errors=$(check_io_errors)
+        [ -n "$errors" ] && echo "$errors" || echo "Keine Fehler"
+        ;;
+        
+    *)
+        echo "Usage: $0 {check|status}"
+        exit 1
+        ;;
+esac
