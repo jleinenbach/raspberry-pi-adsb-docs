@@ -1,0 +1,13 @@
+# Backup files
+*.bak
+*.backup
+*~
+
+# Temporary files
+*.tmp
+.DS_Store
+
+# Private/sensitive data (falls vorhanden)
+*secret*
+*password*
+*token*
