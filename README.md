@@ -13,6 +13,7 @@
 | [DRAGONSYNC.md](DRAGONSYNC.md) | Drone detection via Remote ID |
 | [HOME-ASSISTANT.md](HOME-ASSISTANT.md) | Home Assistant integration |
 | [CLAUDE-TEMPLATE.md](CLAUDE-TEMPLATE.md) | Template for AI-assisted maintenance |
+| [scripts/](scripts/) | Monitoring & automation scripts + systemd units |
 
 ## 🛩️ Active Services
 
