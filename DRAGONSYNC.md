@@ -36,6 +36,34 @@ DragonSync erkennt Drohnen via **WiFi/Bluetooth Remote ID** (EU-Pflicht seit 202
 
 *DJI DroneID erfordert zusätzlichen RTL-SDR auf 2.4 GHz
 
+## Upload zu öffentlichen Netzwerken?
+
+**❌ KEIN Community-Upload möglich** - Remote ID Daten bleiben lokal.
+
+### Warum kein öffentliches Drohnen-Tracking?
+
+| Grund | Erklärung |
+|-------|-----------|
+| **Rechtslage** | EU DSGVO & USA Privacy Laws verbieten unbefugte Weitergabe von Remote ID Daten |
+| **Datenschutz** | Remote ID ist für lokale Behörden gedacht, nicht für öffentliches Tracking |
+| **Keine Community-Plattform** | Im Gegensatz zu ADS-B (FlightAware) oder OGN (glidernet.org) existiert keine öffentliche Drohnen-Tracking-Plattform |
+| **Sicherheitsbedenken** | Öffentliches Tracking könnte für Spionage/Stalking missbraucht werden |
+| **Kein Flugsicherungs-Bedarf** | Drohnen fliegen nur bis 120m Höhe - keine Kollisionsgefahr mit Verkehrsfliegern |
+
+### Was gibt es stattdessen?
+
+**Kommerzielle Systeme (nur für Behörden/Betreiber):**
+- **DroneScout**: Upload zu UTM-Plattformen (Altitude Angel) - kostenpflichtig
+- **Dronetag Cloud**: Eigenes Cloud-System für Scout-Receiver - kostenpflichtig
+- **Network Remote ID (USS)**: Offizielle FAA/EASA-Systeme für Luftraum-Management
+
+**DragonSync (dein Setup):**
+- Fokus: Lokale Situational Awareness (Home Assistant + TAK/ATAK)
+- Kein Upload-Feature (by design)
+- Daten bleiben auf dem eigenen Netzwerk
+
+**Fazit:** Remote ID ist bewusst **nicht** wie ADS-B oder OGN - es dient der Identifikation für Behörden, nicht dem Community-Tracking.
+
 ## Dateien
 
 | Pfad | Beschreibung |

@@ -19,6 +19,33 @@ Das Open Glider Network trackt Segelflugzeuge, Gleitschirme, Drohnen und andere 
 - **Nicht im OGN-Netzwerk**: Stand 2026-01-20 keine OGN-Abdeckung für dieses Gebiet
 - **Potenzial**: Lokaler OGN-Empfänger würde Lücke schließen
 
+### Community-Upload zum Open Glider Network
+
+**✅ rtl_ogn sendet automatisch an glidernet.org!**
+
+```
+RTL-SDR (868 MHz) → rtl_ogn → APRS → glidernet.org
+                         ↓
+                   ogn2dump1090 → readsb:30008 → tar1090 (lokal)
+```
+
+**Was wird hochgeladen?**
+- Position, Höhe, Geschwindigkeit von Segelflugzeugen/Gleitschirmen
+- FLARM-IDs (pseudonymisiert)
+- Receiver-Status und Coverage
+
+**Wo sichtbar?**
+- **Live-Tracking:** http://live.glidernet.org/
+- **Receiver-Karte:** https://www.glidernet.org/ (zeigt alle OGN-Stationen)
+- **Coverage-Map:** Zeigt Empfangsreichweite deiner Station
+
+**Konfiguration:**
+- Bereits in `/opt/rtlsdr-ogn/SteGau.conf` konfiguriert
+- Station-ID: Aus Lat/Lon generiert (automatisch)
+- Server: `aprs.glidernet.org:14580` (Standard)
+
+**Privacy:** FLARM-IDs werden mit `~` Präfix pseudonymisiert und können nicht zu realen Personen zurückverfolgt werden.
+
 ---
 
 ## Hardware (bestellt)
@@ -104,8 +131,8 @@ aprs_subscribe_filter = "r/49.866/10.839/100"  # 100km Radius
 │  (1090 MHz + LNA)        (868 MHz)                         │
 │      │                       │                              │
 │      ▼                       ▼                              │
-│   readsb                  rtl_ogn                          │
-│      │                       │                              │
+│   readsb                  rtl_ogn ──────► glidernet.org    │
+│      │                       │            (APRS Upload)     │
 │      │                       ▼                              │
 │      │               ogn2dump1090                          │
 │      │                   │                                  │
@@ -119,6 +146,11 @@ aprs_subscribe_filter = "r/49.866/10.839/100"  # 100km Radius
 │                 ADS-B      OGN                              │
 │                (normal)  (Label)                            │
 └─────────────────────────────────────────────────────────────┘
+
+Dual-Upload-Architektur:
+- ADS-B → FlightAware, ADSBexchange, adsb.fi, etc. (9 Feeds)
+- OGN → glidernet.org (APRS)
+- Beide zusammen in tar1090 visualisiert
 ```
 
 **Repository:** https://github.com/b3nn0/ogn2dump1090
