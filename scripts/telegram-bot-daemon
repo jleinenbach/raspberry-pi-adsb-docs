@@ -6,8 +6,8 @@ set -o pipefail
 #===============================================================================
 
 # Sichere Config-Ladung (ohne source)
-TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN_HERE"')
-TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID="YOUR_CHAT_ID_HERE"')
+TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN_HERE"
+TELEGRAM_CHAT_ID="YOUR_CHAT_ID_HERE"
 
 LAST_UPDATE_FILE="/var/run/telegram-bot-last-update"
 ANSWER_FILE="/var/run/telegram-bot-answer"
@@ -268,9 +268,21 @@ get_status() {
     local sd_icon="🟢"
     [ "$sd_errors" -gt 0 ] && sd_icon="🔴"
 
-    local SERVICES="mlathub readsb piaware fr24feed adsbexchange-feed adsbexchange-mlat adsbexchange-stats tar1090 adsbfi-feed adsbfi-mlat opensky-feeder theairtraffic-feed rbfeeder airplanes-feed airplanes-mlat pfclient dragonsync"
-    local feed_ok=0 feed_fail="" feed_total=0
-    for svc in $SERVICES; do
+
+    # Service-Kategorien (18 Services + zmq-decoder bedingt)
+    local CORE_SERVICES="readsb"
+    local FEED_SERVICES="piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient"
+    local MLAT_SERVICES="mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat"
+    local WEB_SERVICES="tar1090 graphs1090 adsbexchange-stats"
+    local DRONE_SERVICES="dragonsync"
+
+    # Core
+    local core_status="🟢"
+    systemctl is-active $CORE_SERVICES &>/dev/null || core_status="🔴"
+
+    # Upload Feeds
+    local feed_ok=0 feed_total=0 feed_fail=""
+    for svc in $FEED_SERVICES; do
         ((feed_total++))
         if systemctl is-active "$svc" &>/dev/null; then
             ((feed_ok++))
@@ -278,6 +290,37 @@ get_status() {
             feed_fail+=" ${svc%%-*}"
         fi
     done
+    local feed_icon="🟢"
+    [ "$feed_ok" -lt "$feed_total" ] && feed_icon="🟡"
+    [ "$feed_ok" -lt 5 ] && feed_icon="🔴"
+
+    # MLAT
+    local mlat_ok=0 mlat_total=0 mlat_fail=""
+    for svc in $MLAT_SERVICES; do
+        ((mlat_total++))
+        if systemctl is-active "$svc" &>/dev/null; then
+            ((mlat_ok++))
+        else
+            mlat_fail+=" ${svc%%-*}"
+        fi
+    done
+    local mlat_svc_icon="🟢"
+    [ "$mlat_ok" -lt "$mlat_total" ] && mlat_svc_icon="🟡"
+    [ "$mlat_ok" -lt 2 ] && mlat_svc_icon="🔴"
+
+    # Web
+    local web_ok=0 web_total=0
+    for svc in $WEB_SERVICES; do
+        ((web_total++))
+        systemctl is-active "$svc" &>/dev/null && ((web_ok++))
+    done
+    local web_icon="🟢"
+    [ "$web_ok" -lt "$web_total" ] && web_icon="🟡"
+
+    # DragonSync
+    local drone_icon="🟢"
+    systemctl is-active $DRONE_SERVICES &>/dev/null || drone_icon="🟡"
+
     local mlat_status=""
     if systemctl is-enabled adsbexchange-mlat &>/dev/null; then
         local mlat_adsbx=$(ss -tn state established 2>/dev/null | grep -qE '(34\.218|54\.244).*(31090|64590)' && echo "OK" || echo "NEIN")
@@ -313,10 +356,6 @@ get_status() {
     [ "$sig_int" -ge 0 ] 2>/dev/null && sig_icon="🔴"
     [ "$sig_int" -lt -20 ] 2>/dev/null && sig_icon="🟡"
     [ "$sig_int" -lt -30 ] 2>/dev/null && sig_icon="🔴"
-    local feed_icon="🟢"
-    [ "$feed_ok" -lt "$feed_total" ] && feed_icon="🟡"
-    [ "$feed_ok" -lt 6 ] && feed_icon="🔴"
-    local tat_icon=$([[ "$tat_ok" == "OK" ]] && echo "🟢" || echo "🔴")
 
     local session_info=""
     if is_maintenance_running; then
@@ -349,8 +388,12 @@ ${rtl_icon} SDR | ${temp_icon} ${temp}°C | ${sig_icon} ${signal}dB
 *SD-Karte*
 ${sd_icon} ${sd_writes}MB seit Boot | Fehler: ${sd_errors}
 
-*Feeder* (${feed_ok}/${feed_total})
-${feed_icon} $([ -z "$feed_fail" ] && echo "Alle aktiv" || echo "Fehlt:$feed_fail")
+*Services*
+${core_status} Core (readsb)
+${feed_icon} Upload Feeds (${feed_ok}/${feed_total})$([ -z "$feed_fail" ] || echo " - Fehlt:$feed_fail")
+${mlat_svc_icon} MLAT Services (${mlat_ok}/${mlat_total})$([ -z "$mlat_fail" ] || echo " - Fehlt:$mlat_fail")
+${web_icon} Web (${web_ok}/${web_total})
+${drone_icon} DragonSync
 
 *MLAT Sync*
 ${mlat_status}

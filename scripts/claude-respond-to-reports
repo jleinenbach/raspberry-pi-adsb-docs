@@ -88,9 +88,53 @@ heartbeat
 #-------------------------------------------------------------------------------
 # Sammle Daten
 #-------------------------------------------------------------------------------
-FEEDER_STATUS=""
-for svc in mlathub readsb piaware fr24feed adsbexchange-feed adsbexchange-mlat adsbexchange-stats tar1090 adsbfi-feed adsbfi-mlat opensky-feeder theairtraffic-feed rbfeeder airplanes-feed airplanes-mlat pfclient dragonsync; do
-    FEEDER_STATUS="$FEEDER_STATUS$svc: $(systemctl is-active $svc 2>/dev/null)
+
+#-------------------------------------------------------------------------------
+# Sammle Daten - Kategorisiert
+#-------------------------------------------------------------------------------
+# Service-Kategorien (18 Services)
+CORE_SERVICES="readsb"
+FEED_SERVICES="piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient"
+MLAT_SERVICES="mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat"
+WEB_SERVICES="tar1090 graphs1090 adsbexchange-stats"
+DRONE_SERVICES="dragonsync"
+
+FEEDER_STATUS="Core ADS-B:
+"
+for svc in $CORE_SERVICES; do
+    FEEDER_STATUS="$FEEDER_STATUS  $svc: $(systemctl is-active $svc 2>/dev/null)
+"
+done
+
+FEEDER_STATUS="${FEEDER_STATUS}
+Upload Feeds:
+"
+for svc in $FEED_SERVICES; do
+    FEEDER_STATUS="$FEEDER_STATUS  $svc: $(systemctl is-active $svc 2>/dev/null)
+"
+done
+
+FEEDER_STATUS="${FEEDER_STATUS}
+MLAT Services:
+"
+for svc in $MLAT_SERVICES; do
+    FEEDER_STATUS="$FEEDER_STATUS  $svc: $(systemctl is-active $svc 2>/dev/null)
+"
+done
+
+FEEDER_STATUS="${FEEDER_STATUS}
+Web Services:
+"
+for svc in $WEB_SERVICES; do
+    FEEDER_STATUS="$FEEDER_STATUS  $svc: $(systemctl is-active $svc 2>/dev/null)
+"
+done
+
+FEEDER_STATUS="${FEEDER_STATUS}
+DragonSync:
+"
+for svc in $DRONE_SERVICES; do
+    FEEDER_STATUS="$FEEDER_STATUS  $svc: $(systemctl is-active $svc 2>/dev/null)
 "
 done
 

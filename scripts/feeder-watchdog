@@ -10,7 +10,7 @@ set -o pipefail
 # Fix 2026-01-25: source durch sichere Config-Ladung ersetzt
 
 DEPENDENCIES="NetworkManager chronyd dbus systemd-udevd"
-FEEDERS="mlathub readsb piaware fr24feed adsbexchange-feed adsbexchange-mlat adsbexchange-stats tar1090 adsbfi-feed adsbfi-mlat opensky-feeder theairtraffic-feed rbfeeder airplanes-feed airplanes-mlat pfclient dragonsync"
+FEEDERS="readsb piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat tar1090 graphs1090 adsbexchange-stats dragonsync"
 LOG="/var/log/feeder-watchdog.log"
 FAIL_DIR="/var/run/feeder-watchdog"
 MAX_FAILURES=6
@@ -28,8 +28,8 @@ mkdir -p "$FAIL_DIR"
 load_telegram_config() {
     local conf="${1:-/etc/telegram-notify.conf}"
     [ ! -f "$conf" ] && return 1
-    TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN_HERE"$conf" 2>/dev/null | cut -d= -f2- | tr -d '"' )
-    TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID="YOUR_CHAT_ID_HERE"$conf" 2>/dev/null | cut -d= -f2- | tr -d '"' )
+    TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN=" "$conf" 2>/dev/null | cut -d= -f2- | tr -d '"' )
+    TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID=" "$conf" 2>/dev/null | cut -d= -f2- | tr -d '"' )
     [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ] && return 1
     return 0
 }

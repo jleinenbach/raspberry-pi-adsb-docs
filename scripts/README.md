@@ -6,7 +6,7 @@ Diese Skripte überwachen und warten das Raspberry Pi ADS-B/OGN/Drone Receiver S
 
 | Script | Funktion | Interval |
 |--------|----------|----------|
-| **feeder-watchdog** | Überwacht 17 Feeder-Services, startet neu bei Ausfall | 5min |
+| **feeder-watchdog** | Überwacht 18 Services (nach Kategorien), startet neu bei Ausfall | 5min |
 | **wartungs-watchdog** | Überwacht Claude-Wartung, eskaliert bei Timeout | 10min |
 | **claude-respond-to-reports** | Tägliche Wartung: CVEs, Updates, Security-Checks | 07:00 täglich |
 | **telegram-bot-daemon** | Telegram-Bot für /status, /stats, /wartung, /do | Daemon |
@@ -127,12 +127,29 @@ journalctl -u feeder-watchdog.service -f
 
 ## 🔧 Anpassung
 
-### Überwachte Services ändern (feeder-watchdog)
+### Überwachte Services (18 nach Kategorien)
 
-Editiere die `FEEDERS` Variable in `feeder-watchdog`:
-```bash
-FEEDERS="readsb piaware fr24feed adsbexchange-feed ..."
+Die Services sind nach Funktion kategorisiert:
+
+| Kategorie | Services | Anzahl |
+|-----------|----------|--------|
+| **Core ADS-B** | readsb | 1 |
+| **Upload Feeds** | piaware, fr24feed, adsbexchange-feed, adsbfi-feed, opensky-feeder, theairtraffic-feed, rbfeeder, airplanes-feed, pfclient | 9 |
+| **MLAT** | mlathub, adsbexchange-mlat, adsbfi-mlat, airplanes-mlat | 4 |
+| **Web** | tar1090, graphs1090, adsbexchange-stats | 3 |
+| **DragonSync** | dragonsync | 1 |
+
+**Telegram /status zeigt kategorisiert:**
 ```
+*Services*
+🟢 Core (readsb)
+🟢 Upload Feeds (9/9)
+🟢 MLAT Services (4/4)
+🟢 Web (3/3)
+🟢 DragonSync
+```
+
+**Ändern:** Editiere die Service-Listen in `feeder-watchdog`, `telegram-bot-daemon` und `claude-respond-to-reports` synchron!
 
 ### Eskalations-Strategie (feeder-watchdog)
 
@@ -142,9 +159,17 @@ Bei Ausfall wird automatisch:
 3. **3. Versuch:** Telegram-Warnung + AppArmor-Check
 4. **Aufgeben:** Nach 3 erfolglosen Versuchen (Telegram-Eskalation)
 
-### Telegram-Befehle erweitern
+### Telegram-Befehle
 
-Siehe `telegram-bot-daemon` - Neue Befehle in `handle_command()` hinzufügen.
+**Verfügbare Befehle:**
+- `/status` - System Health (kategorisiert nach Core, Feeds, MLAT, Web, DragonSync)
+- `/stats` - ADS-B Statistiken (Flugzeuge, Reichweite, MLAT-Rückkanal)
+- `/log` - Letzte Wartung anzeigen
+- `/do <cmd>` - Schnelle Anweisung an Claude (Queue-System)
+- `/wartung [text]` - Volle Claude-Wartung starten
+- `/abbrechen` - Offene Session abbrechen
+
+**Befehle erweitern:** Siehe `telegram-bot-daemon` - Neue Befehle in `handle_command()` hinzufügen.
 
 ## ⚠️ Sicherheit
 
