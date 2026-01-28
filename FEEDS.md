@@ -1,5 +1,8 @@
 # ADS-B Feed-Konfiguration & Credentials
 
+> **Hinweis:** Dieses Dokument behandelt nur **ADS-B (1090 MHz)** Upload Feeds.
+> OGN/FLARM (868 MHz) und Remote ID (BLE) Daten bleiben lokal - siehe `OGN-SETUP.md` und `DRAGONSYNC.md`.
+
 ## Standort (Antennenposition)
 - **Breitengrad:** 49.86625
 - **Längengrad:** 10.83948
