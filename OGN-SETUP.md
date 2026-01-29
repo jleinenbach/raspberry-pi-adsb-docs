@@ -35,7 +35,7 @@ RTL-SDR (868 MHz) → rtl_ogn → APRS → glidernet.org
 - Receiver-Status und Coverage
 
 **Wo sichtbar?**
-- **Live-Tracking:** http://live.glidernet.org/
+- **Live-Tracking:** https://live.glidernet.org/#c=49.86625,10.83948&z=9&m=2&s=1 (Station SteGau)
 - **Receiver-Karte:** https://www.glidernet.org/ (zeigt alle OGN-Stationen)
 - **Coverage-Map:** Zeigt Empfangsreichweite deiner Station
 
