@@ -469,7 +469,7 @@ TELEGRAM AM ENDE (MAX 500 ZEICHEN!):
 [TELEGRAM:ERROR] Zusammenfassung - wenn Probleme offen
 
 Sende IMMER am Ende eine KURZE Telegram-Zusammenfassung (max 500 Zeichen).
-Beispiel: /usr/local/sbin/telegram-notify "Wartung: 15 Feeder OK, keine CVEs, System gesund."
+Beispiel: /usr/local/sbin/telegram-notify "Wartung: 18 Services OK, keine CVEs, System gesund."
 PROMPTEOF
 
 FULL_PROMPT="$PROMPT

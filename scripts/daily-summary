@@ -1,0 +1,103 @@
+#!/bin/bash
+set -o pipefail
+#===============================================================================
+# Tägliche Zusammenfassung vor Claude-Wartung
+# Läuft um 06:55, sendet Status via Telegram
+#===============================================================================
+
+# Fix 2026-01-25: source durch sichere Config-Ladung ersetzt
+# Sichere Config-Ladung (ohne source)
+TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN=" /etc/telegram-notify.conf 2>/dev/null | cut -d= -f2- | tr -d '"')
+TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID=" /etc/telegram-notify.conf 2>/dev/null | cut -d= -f2- | tr -d '"')
+
+# Uptime
+UPTIME=$(uptime -p | sed 's/up //')
+
+# RAM
+RAM_PCT=$(free | awk '/Mem:/ {printf "%.0f", $3/$2*100}')
+
+# CPU Temperatur
+TEMP=$(vcgencmd measure_temp 2>/dev/null | grep -oP "[0-9.]+" || echo "?")
+
+# Service Status (18 Services nach Kategorien)
+SERVICE_OK=0
+SERVICE_FAIL=""
+for svc in readsb piaware fr24feed adsbexchange-feed adsbexchange-mlat adsbexchange-stats tar1090 graphs1090 adsbfi-feed adsbfi-mlat opensky-feeder theairtraffic-feed rbfeeder airplanes-feed airplanes-mlat pfclient mlathub dragonsync; do
+    if systemctl is-active "$svc" &>/dev/null; then
+        ((SERVICE_OK++))
+    else
+        SERVICE_FAIL+=" ${svc%%-*}"
+    fi
+done
+SERVICE_TOTAL=18
+
+# Watchdog Eskalationen und Reparaturen (letzte 24h)
+# Berechne Zeitstempel von vor 24 Stunden
+YESTERDAY=$(date -d "24 hours ago" "+%Y-%m-%d %H:%M:%S")
+# Zähle nur Zeilen mit Zeitstempel >= gestern
+ESCALATIONS=$(awk -v cutoff="$YESTERDAY" '$0 ~ /^\[/ { ts=substr($0,2,19); if (ts >= cutoff && /ESKALATION/) count++ } END { print count+0 }' /var/log/feeder-watchdog.log 2>/dev/null)
+REPAIRS=$(awk -v cutoff="$YESTERDAY" '$0 ~ /^\[/ { ts=substr($0,2,19); if (ts >= cutoff && /erfolgreich neugestartet/) count++ } END { print count+0 }' /var/log/feeder-watchdog.log 2>/dev/null)
+
+# Statistiken
+if [ -f /run/readsb/stats.json ]; then
+    TRACKS=$(jq -r '.total.tracks.all // 0' /run/readsb/stats.json 2>/dev/null)
+    MAX_RANGE=$(jq -r '.total.max_distance // 0' /run/readsb/stats.json 2>/dev/null)
+    MAX_RANGE=$((MAX_RANGE / 1852))
+else
+    TRACKS="?"
+    MAX_RANGE="?"
+fi
+
+# CVEs mit verfügbaren Fixes
+CVES=$(debsecan --suite bookworm --only-fixed 2>/dev/null | wc -l)
+
+# Session-Status
+SESSION_INFO=""
+if [ -f /var/lib/claude-pending/session.json ]; then
+    QUESTION=$(jq -r '.question' /var/lib/claude-pending/session.json 2>/dev/null | head -c 50)
+    if [ -n "$QUESTION" ]; then
+        SESSION_INFO="
+
+⏳ *Offene Frage:* ${QUESTION}..."
+    fi
+fi
+
+# Status-Icons
+SERVICE_ICON="🟢"
+[ "$SERVICE_OK" -lt "$SERVICE_TOTAL" ] && SERVICE_ICON="🟡"
+[ "$SERVICE_OK" -lt 14 ] && SERVICE_ICON="🔴"
+
+CVE_ICON="🟢"
+[ "$CVES" -gt 0 ] && CVE_ICON="🟡"
+[ "$CVES" -gt 5 ] && CVE_ICON="🔴"
+
+ESC_ICON="🟢"
+[ "$ESCALATIONS" -gt 0 ] && ESC_ICON="🔴"
+
+MESSAGE="📊 *Täglicher Bericht* (vor Wartung)
+
+*System*
+⏱ Uptime: ${UPTIME}
+💾 RAM: ${RAM_PCT}%
+🌡 Temp: ${TEMP}°C
+
+*Services* (${SERVICE_OK}/${SERVICE_TOTAL})
+${SERVICE_ICON} $([ -z "$SERVICE_FAIL" ] && echo "Alle aktiv" || echo "Fehlt:$SERVICE_FAIL")
+
+*Letzte 24h*
+🔧 Reparaturen: ${REPAIRS}
+${ESC_ICON} Eskalationen: ${ESCALATIONS}
+
+*Statistiken*
+✈️ Flugzeuge gesamt: ${TRACKS}
+📡 Max Reichweite: ${MAX_RANGE} nm
+
+*Sicherheit*
+${CVE_ICON} CVEs mit Fix: ${CVES}${SESSION_INFO}
+
+_Claude-Wartung startet in 5 min..._"
+
+curl -s --max-time 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    -d chat_id="${TELEGRAM_CHAT_ID}" \
+    -d text="${MESSAGE}" \
+    -d parse_mode="Markdown" > /dev/null 2>&1
