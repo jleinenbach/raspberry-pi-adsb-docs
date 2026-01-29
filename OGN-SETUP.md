@@ -371,6 +371,137 @@ grep -c "APRS\|TELNET" /var/log/ogn2dump1090.log | tail -1
 
 ---
 
+## OGN Range V2 - Coverage-Visualisierung
+
+### Installation (vorbereitet)
+**Repository:** [ifly7charlie/ognrange](https://github.com/ifly7charlie/ognrange)
+**Pfad:** `/home/pi/ognrange/`
+**Status:** ✅ Geklont, Konfiguration erstellt, wartet auf Mapbox Token
+
+**Was ist ognrange?**
+Moderne Coverage-Visualisierung für OGN-Empfänger mit:
+- Reichweiten-Karten pro Höhenstufe
+- H3 Hexagonal-Indexierung
+- Identifiziert Coverage-Gaps
+- Vergleich mit anderen Stationen in der Region
+
+**Technologie:**
+- Next.js (Frontend) auf Port 3000
+- APRS Backend (empfängt von glidernet.org)
+- LevelDB (Datenbank)
+- Apache Arrow (komprimierte Daten)
+- deck.gl + Mapbox (Kartendarstellung)
+
+### Konfiguration (.env.local)
+```bash
+# Standort
+NEXT_PUBLIC_SITEURL=ognrange.local
+
+# Mapbox Token (ERFORDERLICH)
+NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN=PLACEHOLDER_TOKEN_REQUIRED
+# Besorgen: https://account.mapbox.com/tokens/
+
+# APRS-Verbindung
+APRS_SERVER=aprs.glidernet.org:14580
+
+# RPi4-Optimierungen
+MAX_ELEVATION_TILES=2000        # Reduziert von 32000 (500MB → 60MB RAM)
+MAX_STATION_DBS=200             # Reduziert von 1200
+ROLLUP_PERIOD_HOURS=6           # Aggregation alle 6h statt 3h
+```
+
+### Installation Steps (nach Hardware-Ankunft)
+
+1. **Mapbox Token besorgen** (kostenlos)
+   ```bash
+   # 1. Registrieren: https://account.mapbox.com/
+   # 2. Token erstellen: https://account.mapbox.com/tokens/
+   # 3. In /home/pi/ognrange/.env.local eintragen
+   ```
+
+2. **Node.js 18+ installieren**
+   ```bash
+   curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+   sudo apt install -y nodejs
+   sudo npm install -g yarn
+   ```
+
+3. **Dependencies installieren**
+   ```bash
+   cd /home/pi/ognrange
+   yarn install
+   # Falls SIGSEGV: npm_config_build_from_source=true yarn install
+   ```
+
+4. **Build & Services erstellen**
+   ```bash
+   yarn next build
+
+   # Systemd Service für Frontend
+   sudo tee /etc/systemd/system/ognrange-next.service > /dev/null <<'EOF'
+   [Unit]
+   Description=OGN Range Frontend
+   After=network.target
+   Wants=ognrange-aprs.service
+
+   [Service]
+   Type=simple
+   User=pi
+   WorkingDirectory=/home/pi/ognrange
+   Environment="NODE_ENV=production"
+   ExecStart=/usr/bin/yarn next start
+   Restart=on-failure
+   RestartSec=10
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+
+   # Systemd Service für APRS Backend
+   sudo tee /etc/systemd/system/ognrange-aprs.service > /dev/null <<'EOF'
+   [Unit]
+   Description=OGN Range APRS Backend
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=pi
+   WorkingDirectory=/home/pi/ognrange
+   Environment="NODE_ENV=production"
+   ExecStart=/usr/bin/yarn aprs
+   Restart=on-failure
+   RestartSec=10
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now ognrange-next ognrange-aprs
+   ```
+
+5. **Zugriff**
+   - Frontend: http://pi:3000 oder http://192.168.1.x:3000
+   - Nach 1 Woche Betrieb: Coverage-Map mit ersten Daten
+
+### Ressourcen-Verbrauch
+| Komponente | RAM | Speicher |
+|------------|-----|----------|
+| APRS Backend | ~500-800MB | ~50MB/Woche (LevelDB) |
+| Frontend | ~200MB | ~2MB/Monat (Arrow-Dateien) |
+| **Gesamt** | ~1GB | ~200MB/Monat |
+
+### Watchdog-Integration (nach Aktivierung)
+```bash
+# In feeder-watchdog hinzufügen:
+systemctl is-active ognrange-next ognrange-aprs
+
+# Daten-Aktualität prüfen
+find /home/pi/ognrange/public/data/arrow/ -mmin -60  # Letzte Stunde
+```
+
+---
+
 ## Diagnose-Befehle
 
 ### OGN-Empfang prüfen
