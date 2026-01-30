@@ -150,3 +150,147 @@ systemctl list-units --state=activating
 3. **AIDE auf Raspberry Pi:** Minimalistische Konfiguration
 4. **Watchdog:** Grace-Period für Startup-States
 5. **Log-Rotation:** Immer mit maxsize konfigurieren
+
+---
+
+## AppArmor blockiert /usr/local/lib/ (2026-01-30)
+
+### Problem
+
+```
+Symptom: Services crashen mit Exit Code 127
+Ursache: AppArmor blockiert /usr/local/lib/librtlsdr.so.0.6git
+Auslöser: AIDE-Neuinitialisierung (aide --init)
+```
+
+**Timeline:**
+```
+22:08  tmpfs /var/log voll → AIDE minimiert → aide --init
+22:30  Alle Services wieder aktiv
+22:50  readsb crasht plötzlich mit Exit Code 127
+       "error while loading shared libraries: librtlsdr.so.0"
+22:51  Kaskaden-Fehler: rbfeeder, pfclient, piaware → Exit Code 127
+22:56  OGN Services crashen mit Exit Code 209 (STDOUT)
+```
+
+**Betroffene Services:**
+- readsb (Core - alle anderen hängen davon ab!)
+- rbfeeder, pfclient, piaware (RTL-SDR Library)
+- ogn-rf-procserv, ogn-decode-procserv (Log-Verzeichnis fehlt)
+- Insgesamt: 23 Services offline
+
+### Root Cause
+
+**Zwei separate Probleme:**
+
+1. **AppArmor blockiert /usr/local/lib/**
+   ```
+   dmesg: apparmor="DENIED" operation="open"
+          name="/usr/local/lib/librtlsdr.so.0.6git"
+   ```
+   - AppArmor-Profile erlauben nur `/usr/lib/` und `/lib/`
+   - RTL-SDR Blog Library liegt aber in `/usr/local/lib/`
+   - Nach AIDE-Init wurde vermutlich AppArmor neu geladen
+
+2. **tmpfs-Cleanup löscht Log-Verzeichnisse**
+   ```
+   Exit Code 209: Failed to set up standard output: No such file or directory
+   ```
+   - `/var/log/rtl-ogn/` Verzeichnis wurde gelöscht (tmpfs-Cleanup)
+   - OGN Services brauchen `StandardOutput=append:/var/log/rtl-ogn/*.log`
+
+### Fix 1: AppArmor-Profile patchen
+
+**Betroffene Profile:**
+```bash
+/etc/apparmor.d/usr.bin.readsb
+/etc/apparmor.d/usr.bin.rbfeeder
+/etc/apparmor.d/usr.bin.pfclient
+/etc/apparmor.d/usr.bin.piaware
+```
+
+**Patch:**
+```bash
+# Füge nach "/lib/aarch64-linux-gnu/** mr," ein:
+/usr/local/lib/** mr,
+```
+
+**Skript zum Patchen aller Profile:**
+```bash
+for profile in /etc/apparmor.d/usr.bin.{readsb,rbfeeder,pfclient,piaware}; do
+  if [ -f "$profile" ]; then
+    if ! grep -q "/usr/local/lib/\*\* mr," "$profile"; then
+      sudo sed -i '/\/lib\/aarch64-linux-gnu\/\*\* mr,/a\  \/usr\/local\/lib\/\*\* mr,' "$profile"
+      echo "✓ Gepatcht: $profile"
+    fi
+  fi
+done
+
+# AppArmor-Profile neu laden
+sudo apparmor_parser -r /etc/apparmor.d/usr.bin.{readsb,rbfeeder,pfclient,piaware}
+
+# Services neu starten
+sudo systemctl restart readsb rbfeeder pfclient piaware
+```
+
+### Fix 2: OGN Log-Verzeichnis persistent machen
+
+**Problem:** `/var/log/rtl-ogn/` liegt auf tmpfs und wird gelöscht
+
+**Lösung:**
+```bash
+# Verzeichnis erstellen und Permissions setzen
+sudo mkdir -p /var/log/rtl-ogn
+sudo chown pi:adm /var/log/rtl-ogn
+sudo chmod 750 /var/log/rtl-ogn
+
+# Services neu starten
+sudo systemctl restart ogn-rf-procserv ogn-decode-procserv
+```
+
+**Permanent machen (tmpfiles.d):**
+```bash
+# /etc/tmpfiles.d/ogn-logs.conf
+d /var/log/rtl-ogn 0750 pi adm -
+```
+
+### Lessons Learned
+
+| Problem | Lösung |
+|---------|--------|
+| Custom Libraries in /usr/local/lib | AppArmor-Profile müssen explizit `/usr/local/lib/** mr,` erlauben |
+| Exit Code 127 | Library/Binary nicht gefunden → `ldd /usr/bin/binary` prüfen, AppArmor-Logs checken |
+| Exit Code 209 | systemd STDOUT-Setup failed → Log-Verzeichnis fehlt |
+| tmpfs /var/log Cleanup | Kritische Log-Dirs mit tmpfiles.d persistent machen |
+| AIDE init Side-Effects | Nach AIDE-Init alle Library-abhängigen Services neu starten + AppArmor prüfen |
+| ldconfig nach Library-Install | Nach Installation in /usr/local/lib immer `ldconfig` ausführen |
+| AppArmor-Diagnose | `sudo dmesg | grep apparmor.*DENIED` zeigt blockierte Zugriffe |
+
+### Verification
+
+```bash
+# AppArmor blockiert nichts mehr
+sudo dmesg --since "10 minutes ago" | grep "apparmor.*DENIED"
+# Sollte leer sein
+
+# Alle Services laufen
+systemctl is-active readsb rbfeeder pfclient piaware mlathub
+systemctl is-active ogn-rf-procserv ogn-decode-procserv ogn2dump1090
+# Alle sollten "active" sein
+
+# RTL-SDR Library ist erreichbar
+ldd /usr/bin/readsb | grep librtlsdr
+# Sollte zeigen: /usr/local/lib/librtlsdr.so.0
+
+# Log-Verzeichnis existiert
+ls -ld /var/log/rtl-ogn
+# drwxr-x--- 2 pi adm
+```
+
+### Prevention
+
+1. **AppArmor-Profile:** Bei custom Libraries immer `/usr/local/lib/** mr,` einbauen
+2. **tmpfs-Verzeichnisse:** Kritische Dirs mit tmpfiles.d persistent machen
+3. **Nach AIDE-Init:** Alle Services neu starten + AppArmor-Logs prüfen
+4. **ldconfig:** Nach jeder Library-Installation in /usr/local/lib ausführen
+5. **Monitoring:** AppArmor-DENIED-Logs in Wartung integrieren

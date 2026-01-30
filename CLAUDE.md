@@ -211,6 +211,13 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - Log-Rotation: max 1MB, 4 Wochen
   - Loglevel: warning (minimal)
   - Dokumentation: `docs/TROUBLESHOOTING.md`
+- **Fix: AppArmor blockiert /usr/local/lib/ nach AIDE-Init (2026-01-30)**
+  - Problem: Nach AIDE-Neuinitialisierung crashten alle Services (Exit Code 127: librtlsdr.so.0 not found)
+  - Root Cause: AppArmor-Profile erlaubten nur `/usr/lib/` und `/lib/`, nicht `/usr/local/lib/`
+  - Fix: `/usr/local/lib/** mr,` zu allen AppArmor-Profilen hinzugefügt (readsb, rbfeeder, pfclient, piaware)
+  - Zusätzlich: `/var/log/rtl-ogn/` Verzeichnis fehlte (tmpfs-Cleanup) → OGN crashte mit Exit Code 209
+  - Alle 23 Services wiederhergestellt
+  - Lesson: Custom Libraries in /usr/local/lib brauchen explizite AppArmor-Freigabe
 - **RTL-SDR Blog Library v1.3.6 installiert:** Behebt "[R82XX] PLL not locked" Problem mit R828D-Tuner (2026-01-29)
   - Alte Debian librtlsdr (0.6.0-4 aus 2012) durch aktuelle RTL-SDR Blog Version ersetzt
   - Kompiliert und installiert nach `/usr/local/lib/` (überschreibt System-Paket)
@@ -854,6 +861,12 @@ cd /home/pi/docs/scripts
 | **Telegram Bot Mehrfachinstanzen** | **PID-Lock + Command-Lock essentiell! Alte Instanzen über Tage = gecachte alte Ausgaben** |
 | **Bash Code-Caching** | **Bash lädt Skripte komplett beim Start! Änderungen nach Start = alter Code im Speicher** |
 | Bot Lock-Files | PID: `/var/run/telegram-bot.pid`, Command: `/var/run/telegram-command.lock.$cmd` |
+| **AppArmor /usr/local/lib/** | **Custom Libraries in /usr/local/lib/ brauchen explizite AppArmor-Regel!** |
+| **tmpfs Cleanup löscht Dirs** | **tmpfs-Cleanup (z.B. systemd-tmpfiles) kann Log-Verzeichnisse löschen → Exit Code 209** |
+| **Exit Code 127** | **Library/Binary nicht gefunden (Missing .so oder PATH-Problem)** |
+| **Exit Code 209** | **systemd STDOUT-Setup failed (Log-Verzeichnis fehlt)** |
+| **Watchdog "activating" Status** | **"activating" = normaler Übergangszustand (0-10s), NICHT sofort reparieren!** |
+| **ldconfig nach Library-Install** | **Nach Installation in /usr/local/lib immer `ldconfig` ausführen!** |
 
 ### Security Best Practices
 | Pattern | Warum |
