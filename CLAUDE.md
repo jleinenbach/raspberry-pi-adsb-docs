@@ -790,6 +790,7 @@ cd /home/pi/docs/scripts
 | curl hängt | Immer `--max-time 10` verwenden |
 | **Pipe-while Subshell** | **`echo \| while` läuft in Subshell! Nutze `mapfile -t array < <(...)` + `for`** |
 | **`wc -l` + `\|\| echo "0"`** | **Gibt doppelte "0" aus! `wc -l` gibt immer Zahl zurück, braucht kein Fallback** |
+| **Lock-Files mit Befehlen** | **`$LOCK.$cmd` bei `/stats` → `/path/lock./stats` (ungültig)! Entferne `/` mit `${cmd#/}`** |
 
 ### Systemspezifisch
 | Erkenntnis | Kontext |

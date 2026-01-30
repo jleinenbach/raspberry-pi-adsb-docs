@@ -660,7 +660,8 @@ handle_command() {
 
     # Command-Lock für langsame Befehle (verbessert)
     if [[ "$cmd" =~ ^/(status|stats|log|wartung)$ ]]; then
-        local lock_file="$COMMAND_LOCK.$cmd"
+        local cmd_name="${cmd#/}"  # Entfernt führenden /
+        local lock_file="$COMMAND_LOCK.$cmd_name"
         if [ -f "$lock_file" ]; then
             local lock_age=$(($(date +%s) - $(stat -c %Y "$lock_file" 2>/dev/null || echo 0)))
             if [ "$lock_age" -lt 3 ]; then
@@ -669,7 +670,7 @@ handle_command() {
             fi
         fi
         touch "$lock_file"
-        trap 'rm -f "''"' RETURN
+        trap 'rm -f "$lock_file"' RETURN
     fi
 
     case "$cmd" in
