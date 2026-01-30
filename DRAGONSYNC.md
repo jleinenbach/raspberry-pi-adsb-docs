@@ -165,9 +165,9 @@ homeassistant/device_tracker/drone_<id>/config  # HA Discovery
 ### Current Hardware
 | Property | Value |
 |----------|-------|
-| Chip | ESP32-S3 (QFN56) rev 0.2 |
-| MAC | 48:27:e2:e3:fa:a8 |
-| Firmware | drone-mesh-mapper esp32s3-dual-rid.bin |
+| Chip | ESP32-S3-PICO-1 (LGA56) rev 0.2 (AtomS3R) |
+| MAC | e4:b3:23:fa:93:f4 (AtomS3R) |
+| Firmware | drone-mesh-mapper esp32s3-dual-rid.bin (1.4 MB) |
 | USB | `/dev/remoteid` → `/dev/ttyACM0` |
 
 ### Step 1: Install esptool
@@ -348,3 +348,17 @@ fpv_zmq_port = 4226
 - [WiFi-RemoteID](https://github.com/lukeswitz/WiFi-RemoteID)
 - [OpenDroneID](https://github.com/opendroneid/opendroneid-core-c)
 - [EU Remote ID Regulation](https://www.easa.europa.eu/en/domains/civil-drones/drones-regulatory-framework-background/remote-identification)
+
+## AtomS3R - Hardware-Upgrade (2026-01-30)
+
+**Von AtomS3 zu AtomS3R:**
+- **PSRAM:** 8MB eingebaut (vorher: 0 MB)
+- **Flash:** 8MB (vorher: 8MB)
+- **Performance:** Deutlich mehr gleichzeitige Drohnen trackbar
+- **Firmware:** Gleiche (esp32s3-dual-rid.bin)
+
+**Praktische Verbesserungen:**
+- ✅ 10-50 Drohnen: Kein Problem mit PSRAM
+- ✅ Große Events: Stabil auch bei vielen Drohnen
+- ✅ Puffer für Burst-Empfang
+- ✅ Zukunftssicher

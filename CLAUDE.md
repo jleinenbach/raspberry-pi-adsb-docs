@@ -858,3 +858,27 @@ acquire_bot_lock() {
 - Command-Lock: `cmd_name="${cmd#/}"` entfernt führenden Slash
 - Debug-Logging half zu verifizieren: Nur 1x handle_command, 1x send_message
 - Process Substitution `mapfile -t < <(...)` erstellt Child-Prozess (normal, kein Bug)
+
+### AtomS3R Upgrade - AtomS3 durch AtomS3R ersetzt (2026-01-30)
+
+**Hardware-Upgrade:**
+- Alt: AtomS3 (ESP32-S3, kein PSRAM)
+- Neu: AtomS3R (ESP32-S3 + 8MB PSRAM)
+
+**Details AtomS3R:**
+- Chip: ESP32-S3-PICO-1 (LGA56) rev v0.2
+- Flash: 8MB
+- PSRAM: 8MB (eingebaut!)
+- MAC: E4:B3:23:FA:93:F4
+- Firmware: esp32s3-dual-rid.bin (1.4 MB)
+
+**Änderungen:**
+- udev-Regel: Serial Number spezifisch für AtomS3R
+- /dev/remoteid → ttyACM0 (neuer MAC)
+- zmq-decoder läuft auf neuem Gerät
+- DragonSync unverändert (gleicher ZMQ-Port 4224)
+
+**Vorteile:**
+- Deutlich mehr Drohnen gleichzeitig trackbar
+- Bessere Performance bei hoher Last
+- Zukunftssicher für große Events
