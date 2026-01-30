@@ -19,20 +19,19 @@ DO_LOCK="/var/run/telegram-do.lock"
 BOT_PID_FILE="/var/run/telegram-bot.pid"
 COMMAND_LOCK="/var/run/telegram-command.lock"
 
-# PID-Lock für Bot-Instanz
+# PID-Lock für Bot-Instanz (atomar mit flock)
 acquire_bot_lock() {
-    if [ -f "$BOT_PID_FILE" ]; then
-        local old_pid=$(cat "$BOT_PID_FILE" 2>/dev/null)
-        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-            echo "Bot läuft bereits (PID: $old_pid)" >&2
-            exit 1
-        fi
+    exec 200>/var/run/telegram-bot.lock
+    if ! flock -n 200; then
+        echo "Bot läuft bereits (Lock aktiv)" >&2
+        exit 1
     fi
     echo $$ > "$BOT_PID_FILE"
 }
 
 release_bot_lock() {
     rm -f "$BOT_PID_FILE"
+    # flock wird automatisch beim Exit freigegeben
 }
 
 # Cleanup bei Exit
@@ -670,7 +669,7 @@ handle_command() {
             fi
         fi
         touch "$lock_file"
-        trap 'rm -f "$lock_file"' RETURN
+        trap 'rm -f "''"' RETURN
     fi
 
     case "$cmd" in

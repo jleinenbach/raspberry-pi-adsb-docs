@@ -791,6 +791,8 @@ cd /home/pi/docs/scripts
 | **Pipe-while Subshell** | **`echo \| while` läuft in Subshell! Nutze `mapfile -t array < <(...)` + `for`** |
 | **`wc -l` + `\|\| echo "0"`** | **Gibt doppelte "0" aus! `wc -l` gibt immer Zahl zurück, braucht kein Fallback** |
 | **Lock-Files mit Befehlen** | **`$LOCK.$cmd` bei `/stats` → `/path/lock./stats` (ungültig)! Entferne `/` mit `${cmd#/}`** |
+| **flock für atomare Locks** | **`exec 200>/lock && flock -n 200` für Race-Condition-sichere Locks. FD bleibt offen bis Exit** |
+| **systemd PIDFile** | **ExecStartPre=/bin/rm -f pidfile verhindert Stale-Locks bei Crash/Kill** |
 
 ### Systemspezifisch
 | Erkenntnis | Kontext |
