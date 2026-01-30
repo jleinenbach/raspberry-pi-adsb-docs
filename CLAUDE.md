@@ -791,7 +791,7 @@ cd /home/pi/docs/scripts
 | **Pipe-while Subshell** | **`echo \| while` läuft in Subshell! Nutze `mapfile -t array < <(...)` + `for`** |
 | **`wc -l` + `\|\| echo "0"`** | **Gibt doppelte "0" aus! `wc -l` gibt immer Zahl zurück, braucht kein Fallback** |
 | **Lock-Files mit Befehlen** | **`$LOCK.$cmd` bei `/stats` → `/path/lock./stats` (ungültig)! Entferne `/` mit `${cmd#/}`** |
-| **flock für atomare Locks** | **`exec 200>/lock && flock -n 200` für Race-Condition-sichere Locks. FD bleibt offen bis Exit** |
+| **flock für atomare Locks** | **`exec 200>/lock` GLOBAL (nicht in Funktion)! FD muss bis Exit offen bleiben** |
 | **systemd PIDFile** | **ExecStartPre=/bin/rm -f pidfile verhindert Stale-Locks bei Crash/Kill** |
 
 ### Systemspezifisch
@@ -818,6 +818,7 @@ cd /home/pi/docs/scripts
 | esptool write-flash | Immer mit `-z` (komprimiert) und `0x0` (Startadresse) flashen |
 | drone-mesh-mapper Firmware | Lokal in `/home/pi/drone-mesh-mapper/firmware/*.bin`, kein GitHub Release |
 | **Telegram Bot Mehrfachinstanzen** | **PID-Lock + Command-Lock essentiell! Alte Instanzen über Tage = gecachte alte Ausgaben** |
+| **Bash Code-Caching** | **Bash lädt Skripte komplett beim Start! Änderungen nach Start = alter Code im Speicher** |
 | Bot Lock-Files | PID: `/var/run/telegram-bot.pid`, Command: `/var/run/telegram-command.lock.$cmd` |
 
 ### Security Best Practices
@@ -828,3 +829,32 @@ cd /home/pi/docs/scripts
 | Path-Validierung | Prüfe auf `..` und absolute Pfade bei Config-Einträgen |
 | Atomare Dateiops | `flock` oder `(umask 077 && touch file)` |
 | Keine Secrets in Logs | Token/Passwörter nie in Fehlermeldungen |
+
+### Telegram Bot Mehrfach-Antworten - Root Cause (2026-01-30)
+
+**Problem:** 3-11 Antworten auf eine /stats Anfrage
+
+**Root Causes (multiple):**
+1. **flock ohne globalen FD**: `exec 200>` in Funktion → FD sofort geschlossen nach Funktions-Ende
+2. **Bash Code-Caching**: Alte Bot-Prozesse mit altem Code im Speicher (Bash lädt Skript komplett beim Start)
+3. **Command-Lock mit Slash**: `/var/run/telegram-command.lock./stats` ungültig (touch failed)
+
+**Lösung:**
+```bash
+# FALSCH - FD in Funktion (wird geschlossen):
+acquire_bot_lock() {
+    exec 200>/var/run/telegram-bot.lock
+    flock -n 200 || exit 1
+}
+
+# RICHTIG - Globaler FD (bleibt offen):
+exec 200>/var/run/telegram-bot.lock  # GLOBAL vor acquire_bot_lock
+acquire_bot_lock() {
+    flock -n 200 || exit 1
+}
+```
+
+**Weitere Fixes:**
+- Command-Lock: `cmd_name="${cmd#/}"` entfernt führenden Slash
+- Debug-Logging half zu verifizieren: Nur 1x handle_command, 1x send_message
+- Process Substitution `mapfile -t < <(...)` erstellt Child-Prozess (normal, kein Bug)

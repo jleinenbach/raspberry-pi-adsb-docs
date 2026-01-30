@@ -19,9 +19,8 @@ DO_LOCK="/var/run/telegram-do.lock"
 BOT_PID_FILE="/var/run/telegram-bot.pid"
 COMMAND_LOCK="/var/run/telegram-command.lock"
 
-# PID-Lock für Bot-Instanz (atomar mit flock)
+# PID-Lock für Bot-Instanz (globaler FD)
 acquire_bot_lock() {
-    exec 200>/var/run/telegram-bot.lock
     if ! flock -n 200; then
         echo "Bot läuft bereits (Lock aktiv)" >&2
         exit 1
@@ -31,9 +30,7 @@ acquire_bot_lock() {
 
 release_bot_lock() {
     rm -f "$BOT_PID_FILE"
-    # flock wird automatisch beim Exit freigegeben
 }
-
 # Cleanup bei Exit
 trap release_bot_lock EXIT INT TERM
 
@@ -737,6 +734,8 @@ _Oder einfach antworten_"
 #-------------------------------------------------------------------------------
 mkdir -p /var/run
 [ -f "$LAST_UPDATE_FILE" ] || echo "0" > "$LAST_UPDATE_FILE"
+# Öffne Lock-FD global (hält Lock bis Prozess-Ende)
+exec 200>/var/run/telegram-bot.lock
 acquire_bot_lock
 log "Bot-Daemon gestartet"
 
