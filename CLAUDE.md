@@ -218,6 +218,11 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - Zusätzlich: `/var/log/rtl-ogn/` Verzeichnis fehlte (tmpfs-Cleanup) → OGN crashte mit Exit Code 209
   - Alle 23 Services wiederhergestellt
   - Lesson: Custom Libraries in /usr/local/lib brauchen explizite AppArmor-Freigabe
+- **Fix: Telegram Bot Signal-Logik invertiert (2026-01-30)**
+  - Problem: -0.9 dB zeigte 🔴 ROT (sollte aber 🟢 GRÜN sein!)
+  - Alte Logik: >= 0 dB = ROT, < -20 dB = GELB (komplett falsch für RF-Signale)
+  - Neue Logik: 0 bis -10 dB = 🟢 GRÜN (stark), -10 bis -20 dB = 🟡 GELB (OK), < -20 dB = 🔴 ROT (schwach)
+  - RF-Regel: Je näher an 0 dB, desto BESSER das Signal!
 - **RTL-SDR Blog Library v1.3.6 installiert:** Behebt "[R82XX] PLL not locked" Problem mit R828D-Tuner (2026-01-29)
   - Alte Debian librtlsdr (0.6.0-4 aus 2012) durch aktuelle RTL-SDR Blog Version ersetzt
   - Kompiliert und installiert nach `/usr/local/lib/` (überschreibt System-Paket)
@@ -907,6 +912,16 @@ cd /home/pi/docs/scripts
 | **squawk** | Transponder-Code (7700=Notfall, 7600=Funk, 7500=Entführung) |
 | **category** | ICAO Aircraft Category (A0-A7, B0-B4, C0-C3, H*) |
 | **hex** | ICAO 24-bit Address (6 Hex-Ziffern, z.B. 3C-3F = Deutschland) |
+| **peak_signal** | RF-Signalstärke in **dB** - Je näher an 0, desto BESSER! |
+
+### RF-Signal-Qualität (peak_signal)
+| dB-Bereich | Qualität | Icon |
+|------------|----------|------|
+| 0 bis -10 dB | 🟢 Ausgezeichnet | Sehr starkes Signal |
+| -10 bis -20 dB | 🟡 Gut | Normales Signal |
+| < -20 dB | 🔴 Schwach | Grenzwertig |
+
+**Wichtig:** Bei RF-Signalen bedeuten **negative Werte näher an 0 = STÄRKER**! -0.9 dB ist besser als -15 dB!
 
 ### ICAO Address Ranges (wichtigste)
 | Land/Region | Range | Anzahl |
