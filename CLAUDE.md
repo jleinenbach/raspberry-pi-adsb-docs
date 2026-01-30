@@ -845,6 +845,87 @@ cd /home/pi/docs/scripts
 | Atomare Dateiops | `flock` oder `(umask 077 && touch file)` |
 | Keine Secrets in Logs | Token/Passwörter nie in Fehlermeldungen |
 
+### Python & Logging
+| Erkenntnis | Lösung |
+|------------|--------|
+| **File-Logging auf tmpfs** | **Nie! tmpfs (/var/log) ist begrenzt (50MB). Nutze systemd journal statt file logging** |
+| Python logging für systemd | `logging.basicConfig(stream=sys.stdout)` - systemd fängt stdout ab |
+| logging.FileHandler Permissions | Erstelle Log-File VOR Service-Start: `touch && chown && chmod` |
+| tmpfs voll = OSError | `[Errno 28] No space left on device` beim File-Write → Journal nutzen! |
+| Python logging Level | INFO für Production, DEBUG nur temporär (verbost Journal) |
+
+### Netzwerk-Protokolle
+| Protokoll | Erkenntnis |
+|-----------|-----------|
+| **APRS Login Response** | **Mehrzeilig! Mehrere recv() in Schleife bis "verified" erscheint** |
+| APRS "unverified" | Bei readonly/filter-only Zugriff normal - Stream funktioniert trotzdem |
+| APRS Filter-Syntax | `r/lat/lon/radius` für geografischen Filter (radius in km) |
+| OGN APRS Aircraft Type | Kodiert in `id[0-E][0-3]XXXXXX` - erste Hex-Ziffer = Type (0-14) |
+| TCP Socket Timeout | Immer `settimeout()` setzen - sonst hängt recv() ewig bei Disconnect |
+| Socket recv() Loop | Bei mehrzeiligen Antworten in Schleife lesen, nicht nur 1x |
+
+### ADS-B & Aviation
+| Feld | Bedeutung / Einheit |
+|------|---------------------|
+| **alt_baro** | Barometrische Höhe in **Fuß** (1ft = 0.3048m) |
+| **gs** | Ground Speed in **Knoten** (1kt = 1.852 km/h) |
+| **r_dst** | Entfernung in **Nautischen Meilen** (1nm = 1.852 km) |
+| **r_dir** | Richtung in Grad (0-360°, 0=N, 90=O, 180=S, 270=W) |
+| **baro_rate** | Steig-/Sinkrate in **Fuß/Minute** (1 fpm = 0.00508 m/s) |
+| **squawk** | Transponder-Code (7700=Notfall, 7600=Funk, 7500=Entführung) |
+| **category** | ICAO Aircraft Category (A0-A7, B0-B4, C0-C3, H*) |
+| **hex** | ICAO 24-bit Address (6 Hex-Ziffern, z.B. 3C-3F = Deutschland) |
+
+### ICAO Address Ranges (wichtigste)
+| Land/Region | Range | Anzahl |
+|-------------|-------|--------|
+| Deutschland | 3C0000-3FFFFF | 262.144 |
+| USA | A00000-AFFFFF | 1.048.576 |
+| Großbritannien | 400000-43FFFF | 262.144 |
+| Frankreich | 380000-3BFFFF | 262.144 |
+| Militär rotiert Adressen | Aus OPSEC-Gründen | Keine festen Ranges |
+
+### OGN Aircraft Type Codes
+| Code | Typ | Beispiel |
+|------|-----|----------|
+| 0 | Unknown | Unbekannt |
+| 1 | Glider | Segelflugzeug |
+| 2 | Tow Plane | Schleppflugzeug |
+| 3 | Helicopter | Hubschrauber |
+| 7 | Paraglider | Gleitschirm |
+| **11** | **Balloon** | **Heißluftballon** ← überwacht |
+| 12 | Airship | Luftschiff |
+| 13 | UAV | Drohne |
+
+### Mathematik & Berechnungen
+| Formel | Verwendung |
+|--------|------------|
+| **Haversine-Formel** | Entfernung zwischen GPS-Koordinaten: `d = 2R * arcsin(sqrt(sin²(Δlat/2) + cos(lat1)*cos(lat2)*sin²(Δlon/2)))` |
+| **R (Erdradius)** | 6371 km (Durchschnitt) |
+| Himmelsrichtung | `idx = int((deg + 22.5) / 45) % 8` für N/NO/O/SO/S/SW/W/NW |
+| Fuß → Meter | `m = ft * 0.3048` |
+| Knoten → km/h | `kmh = kt * 1.852` |
+| Nautische Meilen → km | `km = nm * 1.852` |
+| fpm → m/min | `m/min = fpm * 0.3048` |
+
+### State-File basierte Deduplizierung
+| Pattern | Verwendung |
+|---------|------------|
+| **Timestamp-basiert** | `{"key": timestamp}` - Cooldown-Check mit `now - last_seen > cooldown` |
+| **State-Cleanup** | Regelmäßig alte Einträge löschen (z.B. >24h): `{k:v for k,v in state.items() if v > cutoff}` |
+| **State-Key-Format** | `f"{alert_type}:{hex_id}"` - Pro Alert-Typ UND Objekt separater Cooldown |
+| **JSON State-File** | `/var/lib/claude-pending/*.json` - Persistent über Neustarts |
+| Atomic Write | `json.dump()` in tmp → `mv` (nicht direkt schreiben) |
+
+### Alert-System Design
+| Pattern | Vorteil |
+|---------|---------|
+| **Lambda-Check-Functions** | Konfiguration + Logik zusammen: `"check": lambda ac: ac.get("alt") < 1000` |
+| **Cooldown pro Alert-Typ** | Verschiedene Wichtigkeit: Emergency 5min, andere 30min-1h |
+| **Mehrere Alerts parallel** | Ein Flugzeug kann mehrere Alerts auslösen (z.B. Militär + Tief) |
+| **Vollständige Einheiten** | Metrisch + Imperial parallel zeigen: "1200m (3937ft)" |
+| **Begründung in Alert** | User versteht WARUM Alert kam: "Grund: Über 400kt unter 5000ft" |
+
 ### Telegram Bot Mehrfach-Antworten - Root Cause (2026-01-30)
 
 **Problem:** 3-11 Antworten auf eine /stats Anfrage
