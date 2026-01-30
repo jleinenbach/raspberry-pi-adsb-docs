@@ -16,6 +16,27 @@ SESSION_DIR="/var/lib/claude-pending"
 SESSION_FILE="$SESSION_DIR/session.json"
 LOG_FILE="/var/log/telegram-bot.log"
 DO_LOCK="/var/run/telegram-do.lock"
+BOT_PID_FILE="/var/run/telegram-bot.pid"
+COMMAND_LOCK="/var/run/telegram-command.lock"
+
+# PID-Lock für Bot-Instanz
+acquire_bot_lock() {
+    if [ -f "$BOT_PID_FILE" ]; then
+        local old_pid=$(cat "$BOT_PID_FILE" 2>/dev/null)
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            echo "Bot läuft bereits (PID: $old_pid)" >&2
+            exit 1
+        fi
+    fi
+    echo $$ > "$BOT_PID_FILE"
+}
+
+release_bot_lock() {
+    rm -f "$BOT_PID_FILE"
+}
+
+# Cleanup bei Exit
+trap release_bot_lock EXIT INT TERM
 
 MAX_MSG_LEN=1000
 MAINTENANCE_LOCK="/var/run/claude-respond.lock"
@@ -225,7 +246,7 @@ get_firmware_status() {
     local bootloader_status=$(echo "$eeprom_output" | grep -E "^BOOTLOADER:" | awk '{print $2,$3,$4}')
     local vl805_status=$(echo "$eeprom_output" | grep -E "^\s*VL805:" | awk '{print $2,$3,$4}')
 
-    local fw_icon="🟢"
+    fw_icon="🟢"
     if echo "$bootloader_status" | grep -qi "update available"; then
         fw_icon="🟡"
     fi
@@ -234,9 +255,9 @@ get_firmware_status() {
     fi
 
     if [ "$fw_icon" = "🟢" ]; then
-        echo "${fw_icon} Aktuell"
+        fw_status="Aktuell"
     else
-        echo "${fw_icon} Update verfügbar"
+        fw_status="Update verfügbar"
     fi
 }
 
@@ -260,6 +281,25 @@ get_status() {
 
     local rtl=$(lsusb | grep -qi rtl && echo "OK" || echo "FEHLT")
     local temp=$(vcgencmd measure_temp 2>/dev/null | grep -oP "[0-9.]+" || echo "0")
+
+    # Spannungsu00fcberwachung
+    local throttled=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
+    local throttled="${throttled:-0x0}"
+    local throttled_dec=$((throttled))
+    local volt_bit0=$((throttled_dec & 0x1))
+    local volt_bit16=$((throttled_dec & 0x10000))
+    local volt_icon="🟢"
+    local volt_status="OK"
+    if [ "$throttled" = "0x0" ]; then
+        volt_icon="🟢"
+        volt_status="Stabil"
+    elif [ "$volt_bit0" -eq 1 ]; then
+        volt_icon="🔴"
+        volt_status="Unterspannung JETZT!"
+    elif [ "$volt_bit16" -ne 0 ]; then
+        volt_icon="🟡"
+        volt_status="Unterspannung (Vergangenheit)"
+    fi
     local signal=$(cat /run/readsb/stats.json 2>/dev/null | jq -r '.last1min.local.peak_signal // -99' 2>/dev/null)
     local sig_int=${signal%.*}
 
@@ -269,12 +309,13 @@ get_status() {
     [ "$sd_errors" -gt 0 ] && sd_icon="🔴"
 
 
-    # Service-Kategorien (18 Services + zmq-decoder bedingt)
+    # Service-Kategorien (21 Services + zmq-decoder bedingt)
     local CORE_SERVICES="readsb"
     local FEED_SERVICES="piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient"
     local MLAT_SERVICES="mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat"
     local WEB_SERVICES="tar1090 graphs1090 adsbexchange-stats"
     local DRONE_SERVICES="dragonsync"
+    local OGN_SERVICES="ogn-rf-procserv ogn-decode-procserv ogn2dump1090"
 
     # Core
     local core_status="🟢"
@@ -319,9 +360,34 @@ get_status() {
 
     # DragonSync
     local drone_icon="🟢"
+    local drone_count=$(curl -s http://localhost:8088/drones 2>/dev/null | python3 -c "import sys, json; data=json.load(sys.stdin); print(len(data.get('drones', [])))" 2>/dev/null || echo "0")
+    local drone_display="DragonSync"
+    [ "$drone_count" -gt 0 ] && drone_display="DragonSync - Drohnen: ${drone_count} aktiv"
     systemctl is-active $DRONE_SERVICES &>/dev/null || drone_icon="🟡"
 
-    local mlat_status=""
+    # OGN
+    local ogn_ok=0 ogn_total=0
+    for svc in $OGN_SERVICES; do
+        ((ogn_total++))
+        systemctl is-active "$svc" &>/dev/null && ((ogn_ok++))
+    done
+    local ogn_icon="🟢"
+    [ "$ogn_ok" -lt "$ogn_total" ] && ogn_icon="🟡"
+    [ "$ogn_ok" -eq 0 ] && ogn_icon="🔴"
+
+    # OGN-Statistiken von ogn-decode
+    local ogn_stats="?"
+    if systemctl is-active ogn-decode-procserv &>/dev/null; then
+        local ogn_html=$(curl -s --max-time 2 http://localhost:8081/status.html 2>/dev/null)
+        if [ -n "$ogn_html" ]; then
+            ogn_stats=$(echo "$ogn_html" | grep -oP 'Aircrafts received over last minute.*?<b>\K[^<]+' | tr -d ' ')
+            [ -z "$ogn_stats" ] && ogn_stats="0/0"
+        else
+            ogn_stats="⏳"  # Benchmarking
+        fi
+    else
+        ogn_stats="offline"
+    fi
     if systemctl is-enabled adsbexchange-mlat &>/dev/null; then
         local mlat_adsbx=$(ss -tn state established 2>/dev/null | grep -qE '(34\.218|54\.244).*(31090|64590)' && echo "OK" || echo "NEIN")
         local mlat_x_icon=$([[ "$mlat_adsbx" == "OK" ]] && echo "🟢" || echo "🔴")
@@ -345,7 +411,6 @@ get_status() {
     fi
     [ -z "$mlat_status" ] && mlat_status="Keine konfiguriert"
 
-    local tat_ok=$(curl -s --max-time 3 "https://theairtraffic.com/iapi/feeder_status" 2>/dev/null | grep -q "ADS-B feed detected" && echo "OK" || echo "NEIN")
     local rtl_icon=$([[ "$rtl" == "OK" ]] && echo "🟢" || echo "🔴")
     local temp_int=${temp%.*}
     local temp_icon="🟢"
@@ -377,6 +442,7 @@ get_status() {
 ⏳ Frage offen (noch $remaining)"
     fi
 
+    get_firmware_status
     echo "📡 *System Health*
 
 *System*
@@ -384,6 +450,8 @@ get_status() {
 
 *Hardware*
 ${rtl_icon} SDR | ${temp_icon} ${temp}°C | ${sig_icon} ${signal}dB
+${volt_icon} Spannung: ${volt_status}
+${fw_icon} Firmware: ${fw_status}
 
 *SD-Karte*
 ${sd_icon} ${sd_writes}MB seit Boot | Fehler: ${sd_errors}
@@ -393,16 +461,13 @@ ${core_status} Core (readsb)
 ${feed_icon} Upload Feeds (${feed_ok}/${feed_total})$([ -z "$feed_fail" ] || echo " - Fehlt:$feed_fail")
 ${mlat_svc_icon} MLAT Services (${mlat_ok}/${mlat_total})$([ -z "$mlat_fail" ] || echo " - Fehlt:$mlat_fail")
 ${web_icon} Web (${web_ok}/${web_total})
-${drone_icon} DragonSync
+${drone_icon} ${drone_display}
+${ogn_icon} OGN/FLARM (${ogn_ok}/${ogn_total}) - Empfang: ${ogn_stats}
 
 *MLAT Sync*
 ${mlat_status}
 
-*Extern*
-${tat_icon} TheAirTraffic
-
-*Firmware*
-$(get_firmware_status)${session_info}"
+${session_info}"
 }
 
 #-------------------------------------------------------------------------------
@@ -439,7 +504,29 @@ get_stats() {
     fi
     [ -z "$mlat_results" ] && mlat_results="Keine aktiv"
 
-    echo "📊 *ADS-B Statistiken*
+    # OGN Statistiken
+    local ogn_last_hour=0
+    local ogn_last_min=0
+    if systemctl is-active ogn-decode-procserv &>/dev/null; then
+        local ogn_html=$(curl -s http://localhost:8081/status.html 2>/dev/null)
+        ogn_last_hour=$(echo "$ogn_html" | grep -oP 'Aircrafts received over last hour.*?<b>\s*\K[0-9]+' | head -1)
+        ogn_last_min=$(echo "$ogn_html" | grep -oP 'Aircrafts received over last minute.*?<b>\s*\K[0-9]+' | head -1)
+        [ -z "$ogn_last_hour" ] && ogn_last_hour=0
+        [ -z "$ogn_last_min" ] && ogn_last_min=0
+    fi
+    local ogn_stats_detailed="🪂 Empfangen: ${ogn_last_min}/min, ${ogn_last_hour}/Stunde"
+
+    # Drohnen Statistiken
+    local drone_current=0
+    local drone_total=0
+    if systemctl is-active dragonsync &>/dev/null; then
+        local drone_data=$(curl -s http://localhost:8088/drones 2>/dev/null)
+        drone_current=$(echo "$drone_data" | python3 -c "import sys, json; data=json.load(sys.stdin); print(len(data.get('drones', [])))" 2>/dev/null || echo "0")
+        drone_total=$(sudo journalctl -u dragonsync --since "24 hours ago" --no-pager 2>&1 | grep -oP 'mac.*?[0-9a-f:]{17}' | sort -u | wc -l)
+    fi
+    local drone_stats_detailed="🚁 Aktuell: ${drone_current} | Letzte 24h: ${drone_total}"
+
+    echo "📊 *Statistiken*
 
 *Aktuell*
 ✈️ Flugzeuge: ${aircraft}
@@ -452,7 +539,14 @@ get_stats() {
 📡 Max: ${range_max} nm
 
 *MLAT Rückkanal*
-${mlat_results}"
+${mlat_results}
+
+🪂 *OGN/FLARM Segelflugzeuge*
+${ogn_stats_detailed}
+
+🚁 *Remote ID Drohnen*
+${drone_stats_detailed}"
+
 }
 
 #-------------------------------------------------------------------------------
@@ -563,12 +657,27 @@ handle_command() {
     local cmd=$(echo "$text" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')
     local args=$(echo "$text" | cut -d' ' -f2- -s)
 
+
+    # Command-Lock für langsame Befehle (verbessert)
+    if [[ "$cmd" =~ ^/(status|stats|log|wartung)$ ]]; then
+        local lock_file="$COMMAND_LOCK.$cmd"
+        if [ -f "$lock_file" ]; then
+            local lock_age=$(($(date +%s) - $(stat -c %Y "$lock_file" 2>/dev/null || echo 0)))
+            if [ "$lock_age" -lt 3 ]; then
+                log "Ignoriere Doppel-Request: $cmd (Lock aktiv)"
+                return  # Ignoriere Doppel-Request innerhalb 3 Sekunden
+            fi
+        fi
+        touch "$lock_file"
+        trap 'rm -f "''"' RETURN
+    fi
+
     case "$cmd" in
         /start|/help|/hilfe)
             local help_text="🤖 *ADS-B Feeder Bot*
 
 /status - System Health
-/stats - ADS-B Statistiken
+/stats - Statistiken (ADS-B, OGN, Drohnen)
 /log - Wartungs-Log
 
 *Claude-Befehle:*
@@ -628,6 +737,7 @@ _Oder einfach antworten_"
 #-------------------------------------------------------------------------------
 mkdir -p /var/run
 [ -f "$LAST_UPDATE_FILE" ] || echo "0" > "$LAST_UPDATE_FILE"
+acquire_bot_lock
 log "Bot-Daemon gestartet"
 
 while true; do
@@ -639,7 +749,10 @@ while true; do
         continue
     fi
 
-    echo "$RESPONSE" | jq -c '.result[]' 2>/dev/null | while IFS= read -r update; do
+
+    # Array-basierte Update-Verarbeitung (nicht in Subshell)
+    mapfile -t updates < <(echo "$RESPONSE" | jq -c '.result[]' 2>/dev/null)
+    for update in "${updates[@]}"; do
         UPDATE_ID=$(echo "$update" | jq -r '.update_id')
         CHAT_ID=$(echo "$update" | jq -r '.message.chat.id // empty')
         TEXT=$(echo "$update" | jq -r '.message.text // empty')

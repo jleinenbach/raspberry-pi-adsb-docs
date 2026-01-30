@@ -179,6 +179,170 @@ systemd-analyze security readsb.service | tail -1
 
 ---
 
+## Hardware-Diagnose & Spannungsüberwachung
+
+### RTL-SDR Treiber-Validierung
+
+**Zweck:** Prüft ob der korrekte V4-spezifische Treiber installiert ist (nicht Generic-Fallback)
+
+**Test-Befehl:**
+```bash
+rtl_test -d 1 -t
+```
+
+**Was zu prüfen ist:**
+| Check | Erwarteter Output | Bedeutung |
+|-------|-------------------|-----------|
+| Tuner-Chip | `Found Rafael Micro R828D tuner` | ✅ V4-spezifischer Treiber |
+| Device-Name | `RTLSDRBlog, Blog V4` | ✅ Nicht Generic RTL2832U |
+| Serial | `SN: 00000001` | Device-Index korrekt |
+
+**Fehlerhafte Ausgabe:**
+```
+Found Realtek RTL2832U (Generic)
+Found Rafael Micro R820T tuner  ← FALSCH! (R820T statt R828D)
+```
+
+**Bei falschem Treiber:**
+1. RTL-SDR V4 vom falschen USB-Port entfernen
+2. Korrekte Installation: https://github.com/rtlsdrblog/rtl-sdr-blog
+3. Blacklist Generic-Treiber falls nötig
+
+**Diagnose-Skript:** `/tmp/voltage-check-function.sh` (Beispiel)
+
+---
+
+### USB-Spannungsüberwachung (vcgencmd)
+
+**Zweck:** Erkennt Netzteil-Probleme, USB-Überlastung und defekte Kabel
+
+**Check-Befehl:**
+```bash
+vcgencmd get_throttled
+```
+
+**Hex-Code-Interpretation:**
+| Hex-Wert | Icon | Status | Bedeutung | Aktion |
+|----------|------|--------|-----------|--------|
+| `0x0` | 🟢 | Stabil | Keine Probleme | - |
+| `0x10000` | 🟡 | War niedrig | Unterspannung in Vergangenheit | Netzteil prüfen |
+| `0x50000` | 🟡 | War niedrig | Unterspannung + Throttling | Netzteil prüfen |
+| `0x1` | 🔴 | KRITISCH | Unterspannung JETZT! | Sofort Netzteil tauschen |
+| `0x50005` | 🔴 | KRITISCH | Unterspannung + Throttling JETZT | Sofort Netzteil tauschen |
+
+**Bit-Bedeutung:**
+- **Bit 0** (`& 0x1`): Aktuell Unterspannung (unter 4.63V)
+- **Bit 16** (`& 0x10000`): Jemals Unterspannung seit Boot
+
+**Beispiel-Code:**
+```bash
+throttled=$(vcgencmd get_throttled | cut -d= -f2)
+throttled_dec=$((throttled))
+bit0=$((throttled_dec & 0x1))
+bit16=$((throttled_dec & 0x10000))
+
+if [ "$throttled" = "0x0" ]; then
+    echo "🟢 Stabil"
+elif [ "$bit0" -eq 1 ]; then
+    echo "🔴 Unterspannung JETZT!"
+elif [ "$bit16" -ne 0 ]; then
+    echo "🟡 Unterspannung in Vergangenheit"
+fi
+```
+
+**Überwacht in:**
+- `/usr/local/sbin/telegram-bot-daemon` → `/status` Hardware-Sektion
+- `/usr/local/sbin/claude-respond-to-reports` → Stromversorgungs-Check
+- `/usr/local/sbin/daily-summary` → System-Status
+
+**Output-Format in den verschiedenen Skripten:**
+
+**1. Telegram Bot (`/status` Befehl):**
+```
+*Hardware*
+✅ SDR | 🌡 47.2°C | 📡 -25dB
+🟢 Spannung: Stabil                    ← Spannungsüberwachung
+🟢 OGN/FLARM (3/3) - Empfang: 0/0
+```
+
+**2. Daily Summary (06:55 Uhr vor Wartung):**
+```
+*System*
+⏱ Uptime: 2 days, 3 hours
+💾 RAM: 45%
+🌡 Temp: 47.2°C
+🟢 Spannung: Stabil                    ← Spannungsüberwachung
+```
+
+**3. Wartungsskript (claude-respond-to-reports):**
+```
+=== STROMVERSORGUNG ===
+Throttled: 0x0 (🟢 Stabil)
+```
+
+**Test der Integration:**
+```bash
+# 1. Telegram Bot (simuliert)
+vcgencmd get_throttled
+# Erwartete Ausgabe: throttled=0x0
+
+# 2. Daily Summary manuell ausführen
+sudo /usr/local/sbin/daily-summary
+
+# 3. Wartung (zeigt Stromversorgungs-Sektion)
+# Wird automatisch um 07:00 ausgeführt oder mit /wartung
+```
+
+**Häufige Ursachen:**
+| Problem | Symptom | Lösung |
+|---------|---------|--------|
+| Schwaches Netzteil | `0x50000` bei Last | Offizielles RPi 4 Netzteil (5.1V/3A, USB-C) |
+| USB-Überlastung | `0x10000` sporadisch | RTL-SDR an USB 3.0 Port (blau) |
+| Defektes Kabel | `0x1` trotz gutem Netzteil | USB-C Kabel mit E-Mark Chip |
+| Zu viele USB-Geräte | Throttling bei Aktivität | Powered USB Hub verwenden |
+
+**Wichtig:** RTL-SDR Blog V4 sollte IMMER an USB 3.0 Port (blau) betrieben werden!
+
+**Vollständiger Diagnose-Bericht:**
+```bash
+echo "=== RTL-SDR Treiber ==="
+rtl_test -d 1 -t
+
+echo -e "\n=== Stromversorgung ==="
+vcgencmd get_throttled
+
+echo -e "\n=== USB-Devices ==="
+lsusb | grep -iE 'RTL|SDR|0BDA:2838|0BDA:2832'
+
+echo -e "\n=== Temperatur ==="
+vcgencmd measure_temp
+```
+
+**Beispiel-Output (OK):**
+```
+=== RTL-SDR Treiber ===
+Device 1: RTLSDRBlog, Blog V4, SN: 00000001
+Found Rafael Micro R828D tuner
+
+=== Stromversorgung ===
+throttled=0x0
+
+=== USB-Devices ===
+Bus 002 Device 002: ID 0bda:2832 Realtek RTL2832U (RTL-SDR Blog V4)
+Bus 001 Device 003: ID 0bda:2838 Realtek RTL2838UHIDIR
+
+=== Temperatur ===
+temp=45.6'C
+```
+
+**Bei Problemen:**
+1. Netzteil-Check: Offizielles RPi 4 Netzteil? (5.1V/3A)
+2. USB-Port-Check: V4 an USB 3.0? (blau, nicht schwarz)
+3. Kabel-Check: USB-C mit E-Mark Chip?
+4. Last-Check: Andere USB-Geräte entfernen zum Testen
+
+---
+
 ## Logs
 | Pfad | Inhalt |
 |------|--------|
