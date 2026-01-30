@@ -192,6 +192,25 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - Daily Summary (06:55): Zeigt Spannungsstatus vor Wartung
   - Wartungsskript: "=== STROMVERSORGUNG ===" Sektion
   - Vollständig getestet und dokumentiert → `docs/VOLTAGE-MONITORING.md`
+- **Aircraft Alert Notifier & OGN Balloon Notifier (2026-01-30):** Telegram-Benachrichtigungen für interessante Flugzeuge
+  - **6 Alert-Typen:** Militär tief/nah, Extrem tief, Emergency (7700/7600/7500), Schnelle Tiefflieger, Hubschrauber (9km Radius), Laut & Nah
+  - **Heißluftballons:** OGN Type 11 via APRS-Stream (100km Filter)
+  - **Vollständig metrisch + imperial:** Höhe, Geschwindigkeit, Entfernung mit Begründung
+  - **Services:** aircraft-alert-notifier, ogn-balloon-notifier (23 Services total)
+  - Dokumentation: `docs/AIRCRAFT-ALERTS.md`
+- **Fix: Watchdog behandelt "activating" nicht mehr als Fehler (2026-01-30)**
+  - Services im Status "activating" (normaler Übergangszustand 0-10s) werden nicht mehr "repariert"
+  - Verhindert unnötige Restarts bei selbstheilenden Services
+  - Marker-System verhindert Log-Spam
+- **Fix: tmpfs /var/log Überlauf durch AIDE (2026-01-30)**
+  - Problem: AIDE schrieb 28MB Logs auf tmpfs (50MB Limit) → System lahmgelegt
+  - AIDE minimiert: 75MB → 574 Bytes Datenbank (130x kleiner!)
+  - Nur kritische Pfade: /bin, /sbin, /usr/bin, /usr/sbin, /boot
+  - Log-Pfad: /var/log (tmpfs) → /var/lib/aide/log (SD)
+  - Check-Frequenz: täglich → wöchentlich
+  - Log-Rotation: max 1MB, 4 Wochen
+  - Loglevel: warning (minimal)
+  - Dokumentation: `docs/TROUBLESHOOTING.md`
 - **RTL-SDR Blog Library v1.3.6 installiert:** Behebt "[R82XX] PLL not locked" Problem mit R828D-Tuner (2026-01-29)
   - Alte Debian librtlsdr (0.6.0-4 aus 2012) durch aktuelle RTL-SDR Blog Version ersetzt
   - Kompiliert und installiert nach `/usr/local/lib/` (überschreibt System-Paket)
