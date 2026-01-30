@@ -207,6 +207,18 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - USB jetzt stabil (0 Disconnects), zmq-decoder funktional
   - Update-Check im Wartungsskript integriert (prüft auf neue Commits)
   - Quelle: https://github.com/colonelpanichacks/drone-mesh-mapper
+- **Aircraft Alert System (2026-01-30):** Telegram-Benachrichtigungen für interessante Flugzeuge
+  - **Service:** `aircraft-alert-notifier.service` - Überwacht alle 10s readsb aircraft.json
+  - **6 Alert-Typen:** Militär tief & nah, Extrem tief, Emergency (7700/7600/7500), Schnelle Tiefflieger, Hubschrauber nah, Laut & nah
+  - **Hubschrauber-Radius:** 9km (2x Entfernung Heckenweg → Klinikum Bamberg Bruderwald ~4.5km)
+  - **Benachrichtigungen:** Vollständig metrisch (m/km/h) + imperial (ft/kt/nm), mit Begründung, Himmelsrichtung, Steig/Sinkrate
+  - **Deduplizierung:** Pro Alert-Typ & Flugzeug individueller Cooldown (5min-1h)
+  - **Militär-Erkennung:** Deutsche ICAO-Range 3C-3F, Squawk-Erklärungen (7700=Notfall, 7600=Funkausfall, 7500=Entführung)
+- **OGN Balloon Notifier (2026-01-30):** Telegram-Benachrichtigungen für Heißluftballons
+  - **Service:** `ogn-balloon-notifier.service` - APRS-Stream von glidernet.org
+  - **Filter:** OGN Type 11 (Balloon) innerhalb 100km Radius Stegaurach
+  - **Deduplizierung:** Max. 1x pro Ballon alle 4 Stunden
+  - **Hinweis:** Meiste Hobby-Ballons haben kein FLARM - nur kommerzielle/Flughafen-nahe Ballons sichtbar
 
 ### Skript-Security Audit (2026-01-25)
 **Peer Review aller eigenen Skripte in `/usr/local/sbin/`**
@@ -607,7 +619,7 @@ ODER: ESPHome Proxy (BLE) → ha-opendroneid → Home Assistant (MQTT)
 
 ---
 
-## Überwachte Services (21 + zmq-decoder)
+## Überwachte Services (23 + zmq-decoder)
 *Bot, Watchdog, Wartung müssen synchron sein und nach Kategorien trennen!*
 
 ### Core ADS-B (1)
@@ -629,6 +641,9 @@ ogn-rf-procserv, ogn-decode-procserv, ogn2dump1090
 
 ### DragonSync (1)
 dragonsync
+
+### Alert Services (2)
+aircraft-alert-notifier, ogn-balloon-notifier
 
 **Sonderfall:** `zmq-decoder` wird separat überwacht (nur wenn `/dev/remoteid` existiert)
 
