@@ -239,6 +239,11 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - Fix: Validierung vor Alert-Versand - benötigt alt_baro + r_dst (Höhe + Entfernung)
   - Verhindert leere "Militär tief" Meldungen bei erst teilweise empfangenen Flugzeugen
   - Groß-/Kleinschreibung korrigiert: "tief" statt "Tief"
+- **Fix: ICAO-Anzeige priorisiert (2026-01-31)**
+  - Problem: Bei 16:20 "Militär tief" Meldung fehlte ICAO-Adresse - keine Verknüpfung zu 16:43 "Extrem tief" erkennbar
+  - Fix: ICAO wird IMMER angezeigt und kommt ZUERST (wichtigste Identifikation)
+  - Fallback: "📡 ICAO: ⚠️ Nicht verfügbar" wenn hex_id fehlt
+  - Reihenfolge: ICAO → Callsign → Technische Daten
 - **RTL-SDR Blog Library v1.3.6 installiert:** Behebt "[R82XX] PLL not locked" Problem mit R828D-Tuner (2026-01-29)
   - Alte Debian librtlsdr (0.6.0-4 aus 2012) durch aktuelle RTL-SDR Blog Version ersetzt
   - Kompiliert und installiert nach `/usr/local/lib/` (überschreibt System-Paket)
