@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""
+Drone Alert Notifier - Telegram notification for ALL detected drones
+Monitors DragonSync API and sends detailed notifications for every drone (rare events!)
+"""
+
+import json
+import time
+import subprocess
+import logging
+import sys
+import requests
+from datetime import datetime, timedelta
+from pathlib import Path
+from math import radians, sin, cos, sqrt, atan2, degrees
+
+# Configuration
+DRAGONSYNC_API = "http://localhost:8088/drones"
+STATE_FILE = "/var/lib/claude-pending/drone-alert-state.json"
+CHECK_INTERVAL = 5  # seconds (check frequently - drones are fast!)
+COOLDOWN = 1800  # 30 minutes per drone (avoid spam)
+
+# Home location (Stegaurach)
+HOME_LAT = 49.86625
+HOME_LON = 10.83948
+
+# Setup logging (systemd journal only, no file)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)-8s %(message)s',
+    stream=sys.stdout
+)
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """Calculate distance in km between two GPS coordinates."""
+    R = 6371  # Earth radius in km
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    return R * c
+
+def get_compass_direction(degrees):
+    """Convert degrees to compass direction."""
+    if degrees is None:
+        return "?"
+    directions = ["N", "NO", "O", "SO", "S", "SW", "W", "NW"]
+    idx = int((degrees + 22.5) / 45) % 8
+    return directions[idx]
+
+def load_state():
+    """Load previously seen drones to avoid duplicate notifications."""
+    try:
+        if Path(STATE_FILE).exists():
+            with open(STATE_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logging.warning(f"Failed to load state: {e}")
+    return {}
+
+def save_state(state):
+    """Save state to file."""
+    try:
+        Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        logging.error(f"Failed to save state: {e}")
+
+def cleanup_old_state(state, max_age_hours=24):
+    """Remove entries older than max_age_hours."""
+    now = datetime.now().timestamp()
+    cutoff = now - (max_age_hours * 3600)
+    return {k: v for k, v in state.items() if v > cutoff}
+
+def send_telegram_notification(drone):
+    """Send detailed Telegram notification for drone detection."""
+    try:
+        # Extract drone data
+        mac = drone.get("mac_address", "Unknown")
+        uas_id = drone.get("uas_id", "Unknown")
+
+        # Drone position
+        lat = drone.get("latitude")
+        lon = drone.get("longitude")
+        alt_geo = drone.get("altitude_geo")  # GPS altitude
+        alt_baro = drone.get("altitude_baro")  # Pressure altitude
+
+        # Drone movement
+        speed_h = drone.get("speed_horizontal")  # m/s
+        speed_v = drone.get("speed_vertical")    # m/s
+        direction = drone.get("direction")  # degrees
+
+        # Operator data
+        op_id = drone.get("operator_id", "")
+        op_lat = drone.get("operator_latitude")
+        op_lon = drone.get("operator_longitude")
+        op_alt = drone.get("operator_altitude_geo")
+
+        # Signal quality
+        rssi = drone.get("rssi")
+        timestamp = drone.get("timestamp", "")
+
+        # Calculate distances
+        drone_dist = None
+        operator_dist = None
+        drone_bearing = None
+        operator_bearing = None
+
+        if lat and lon:
+            drone_dist = haversine_distance(HOME_LAT, HOME_LON, lat, lon)
+            # Calculate bearing
+            dlon = radians(lon - HOME_LON)
+            x = sin(dlon) * cos(radians(lat))
+            y = cos(radians(HOME_LAT)) * sin(radians(lat)) - sin(radians(HOME_LAT)) * cos(radians(lat)) * cos(dlon)
+            bearing = atan2(x, y)
+            drone_bearing = (degrees(bearing) + 360) % 360
+
+        if op_lat and op_lon:
+            operator_dist = haversine_distance(HOME_LAT, HOME_LON, op_lat, op_lon)
+            # Calculate bearing
+            dlon = radians(op_lon - HOME_LON)
+            x = sin(dlon) * cos(radians(op_lat))
+            y = cos(radians(HOME_LAT)) * sin(radians(op_lat)) - sin(radians(HOME_LAT)) * cos(radians(op_lat)) * cos(dlon)
+            bearing = atan2(x, y)
+            operator_bearing = (degrees(bearing) + 360) % 360
+
+        # Build notification message
+        message = "🚁 *DROHNE ERKANNT*\\n"
+        message += "━━━━━━━━━━━━━━━━━━━━\\n\\n"
+
+        # Drone ID
+        message += f"📱 *UAS ID:* `{uas_id}`\\n"
+        message += f"📡 *MAC:* `{mac}`\\n"
+
+        if op_id:
+            message += f"👤 *Operator ID:* `{op_id}`\\n"
+
+        message += "\\n"
+
+        # Drone Position
+        if lat and lon:
+            message += f"📍 *Drohnen\\-Position:*\\n"
+            message += f"   Lat: {lat:.5f}°\\n"
+            message += f"   Lon: {lon:.5f}°\\n"
+
+            if drone_dist:
+                message += f"   📏 Entfernung: *{drone_dist:.2f} km*\\n"
+                message += f"   🧭 Richtung: {int(drone_bearing)}° \\({get_compass_direction(drone_bearing)}\\)\\n"
+
+            if alt_geo:
+                message += f"   ⬆️ Höhe \\(GPS\\): {int(alt_geo)} m\\n"
+            elif alt_baro:
+                message += f"   ⬆️ Höhe \\(Baro\\): {int(alt_baro)} m\\n"
+
+        message += "\\n"
+
+        # Drone Movement
+        if speed_h is not None or speed_v is not None:
+            message += f"⚡ *Bewegung:*\\n"
+
+            if speed_h is not None:
+                speed_kmh = speed_h * 3.6
+                message += f"   Horizontal: {speed_kmh:.1f} km/h\\n"
+
+            if speed_v is not None:
+                # Vertical speed
+                if speed_v > 0.1:
+                    message += f"   ⬆️ Steigt: {speed_v:.1f} m/s\\n"
+                elif speed_v < -0.1:
+                    message += f"   ⬇️ Sinkt: {abs(speed_v):.1f} m/s\\n"
+
+            if direction is not None:
+                message += f"   🧭 Kurs: {int(direction)}° \\({get_compass_direction(direction)}\\)\\n"
+
+            message += "\\n"
+
+        # Operator Position (SEHR WICHTIG!)
+        if op_lat and op_lon:
+            message += f"👤 *Piloten\\-Position:*\\n"
+            message += f"   Lat: {op_lat:.5f}°\\n"
+            message += f"   Lon: {op_lon:.5f}°\\n"
+
+            if operator_dist:
+                message += f"   📏 Entfernung: *{operator_dist:.2f} km*\\n"
+                message += f"   🧭 Richtung: {int(operator_bearing)}° \\({get_compass_direction(operator_bearing)}\\)\\n"
+
+            if op_alt:
+                message += f"   ⬆️ Höhe: {int(op_alt)} m\\n"
+
+            message += "\\n"
+
+        # Signal quality
+        if rssi is not None:
+            message += f"📶 *Signal:* {rssi} dBm\\n\\n"
+
+        # Timestamp
+        if timestamp:
+            message += f"⏰ *Zeit:* {timestamp}\\n"
+        else:
+            message += f"⏰ *Zeit:* {datetime.now().strftime('%H:%M:%S')}\\n"
+
+        # Send via telegram-notify
+        result = subprocess.run(
+            ['/usr/local/sbin/telegram-notify', message],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode == 0:
+            logging.info(f"Notification sent for drone {mac[:8]}...")
+            return True
+        else:
+            logging.error(f"Failed to send notification: {result.stderr}")
+            return False
+
+    except Exception as e:
+        logging.error(f"Error sending notification: {e}")
+        return False
+
+def check_drones():
+    """Check DragonSync API for active drones."""
+    try:
+        response = requests.get(DRAGONSYNC_API, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("drones", [])
+    except Exception as e:
+        logging.error(f"Failed to fetch drones: {e}")
+        return []
+
+def main():
+    logging.info("=== Drone Alert Notifier started ===")
+    logging.info(f"Monitoring DragonSync API: {DRAGONSYNC_API}")
+    logging.info(f"Check interval: {CHECK_INTERVAL}s, Cooldown: {COOLDOWN}s")
+
+    state = load_state()
+
+    while True:
+        try:
+            # Cleanup old state entries
+            state = cleanup_old_state(state)
+
+            # Check for drones
+            drones = check_drones()
+
+            if drones:
+                logging.info(f"Found {len(drones)} active drone(s)")
+
+                for drone in drones:
+                    mac = drone.get("mac_address", "Unknown")
+
+                    # Check if we've notified about this drone recently
+                    last_notification = state.get(mac, 0)
+                    now = datetime.now().timestamp()
+
+                    if now - last_notification > COOLDOWN:
+                        # Send notification
+                        if send_telegram_notification(drone):
+                            state[mac] = now
+                            save_state(state)
+                    else:
+                        # Already notified recently
+                        time_left = int(COOLDOWN - (now - last_notification))
+                        logging.debug(f"Drone {mac[:8]}... already notified ({time_left}s cooldown left)")
+
+            time.sleep(CHECK_INTERVAL)
+
+        except KeyboardInterrupt:
+            logging.info("Shutting down...")
+            break
+        except Exception as e:
+            logging.error(f"Error in main loop: {e}")
+            time.sleep(CHECK_INTERVAL)
+
+if __name__ == "__main__":
+    main()

@@ -6,8 +6,8 @@ set -o pipefail
 #===============================================================================
 
 # Sichere Config-Ladung (ohne source)
-TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN_HERE"
-TELEGRAM_CHAT_ID="YOUR_CHAT_ID_HERE"
+TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN=" /etc/telegram-notify.conf 2>/dev/null | cut -d= -f2- | tr -d '"')
+TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID=" /etc/telegram-notify.conf 2>/dev/null | cut -d= -f2- | tr -d '"')
 
 LAST_UPDATE_FILE="/var/run/telegram-bot-last-update"
 ANSWER_FILE="/var/run/telegram-bot-answer"
@@ -305,13 +305,14 @@ get_status() {
     [ "$sd_errors" -gt 0 ] && sd_icon="🔴"
 
 
-    # Service-Kategorien (21 Services + zmq-decoder bedingt)
+    # Service-Kategorien (24 Services + zmq-decoder bedingt)
     local CORE_SERVICES="readsb"
     local FEED_SERVICES="piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient"
     local MLAT_SERVICES="mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat"
     local WEB_SERVICES="tar1090 graphs1090 adsbexchange-stats"
     local DRONE_SERVICES="dragonsync"
     local OGN_SERVICES="ogn-rf-procserv ogn-decode-procserv ogn2dump1090"
+    local ALERT_SERVICES="aircraft-alert-notifier ogn-balloon-notifier drone-alert-notifier"
 
     # Core
     local core_status="🟢"
@@ -384,6 +385,16 @@ get_status() {
     else
         ogn_stats="offline"
     fi
+    
+    # Alert Services
+    local alert_ok=0 alert_total=0
+    for svc in $ALERT_SERVICES; do
+        ((alert_total++))
+        systemctl is-active "$svc" &>/dev/null && ((alert_ok++))
+    done
+    local alert_icon="🟢"
+    [ "$alert_ok" -lt "$alert_total" ] && alert_icon="🟡"
+    [ "$alert_ok" -eq 0 ] && alert_icon="🔴"
     if systemctl is-enabled adsbexchange-mlat &>/dev/null; then
         local mlat_adsbx=$(ss -tn state established 2>/dev/null | grep -qE '(34\.218|54\.244).*(31090|64590)' && echo "OK" || echo "NEIN")
         local mlat_x_icon=$([[ "$mlat_adsbx" == "OK" ]] && echo "🟢" || echo "🔴")
@@ -413,10 +424,10 @@ get_status() {
     [ "$temp_int" -ge 55 ] 2>/dev/null && temp_icon="🟡"
     [ "$temp_int" -ge 65 ] 2>/dev/null && temp_icon="🟠"
     [ "$temp_int" -ge 75 ] 2>/dev/null && temp_icon="🔴"
-    local sig_icon="🟢"
-    [ "$sig_int" -ge 0 ] 2>/dev/null && sig_icon="🔴"
-    [ "$sig_int" -lt -20 ] 2>/dev/null && sig_icon="🟡"
-    [ "$sig_int" -lt -30 ] 2>/dev/null && sig_icon="🔴"
+    # Signal-Qualität: Je näher an 0 dB, desto BESSER (in RF-Welt!)
+    local sig_icon="🟢"  # Default: Grün für gute Signale (-10 bis 0 dB)
+    [ "$sig_int" -lt -10 ] 2>/dev/null && sig_icon="🟡"  # -10 bis -20 dB = OK
+    [ "$sig_int" -lt -20 ] 2>/dev/null && sig_icon="🔴"  # < -20 dB = Schwach
 
     local session_info=""
     if is_maintenance_running; then
@@ -459,6 +470,7 @@ ${mlat_svc_icon} MLAT Services (${mlat_ok}/${mlat_total})$([ -z "$mlat_fail" ] |
 ${web_icon} Web (${web_ok}/${web_total})
 ${drone_icon} ${drone_display}
 ${ogn_icon} OGN/FLARM (${ogn_ok}/${ogn_total}) - Empfang: ${ogn_stats}
+${alert_icon} Alerts (${alert_ok}/${alert_total})
 
 *MLAT Sync*
 ${mlat_status}

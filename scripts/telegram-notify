@@ -1,13 +1,10 @@
 #!/bin/bash
 set -o pipefail
 #===============================================================================
-# Telegram Notification Script für ADS-B Feeder
-# Usage: telegram-notify "Nachricht"
-#        telegram-notify --error "Fehlermeldung"  
-#        telegram-notify --success "Erfolgsmeldung"
+# Telegram Notification Script - MarkdownV2 (2026-01-31)
+# Ref: https://core.telegram.org/bots/api#markdownv2-style
 #===============================================================================
 
-# Fix 2026-01-25: source durch sichere Config-Ladung ersetzt
 CONFIG_FILE="/etc/telegram-notify.conf"
 
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -15,41 +12,49 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-# Sichere Config-Ladung (ohne source)
-TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN_HERE"$CONFIG_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"')
-TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID="YOUR_CHAT_ID_HERE"$CONFIG_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"')
+# Sichere Config-Ladung
+TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"')
+TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID=" "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"')
 
-# Emoji basierend auf Typ
-case "$1" in
-    --error)
-        PREFIX="🔴"
-        shift
-        ;;
-    --success)
-        PREFIX="✅"
-        shift
-        ;;
-    --warning)
-        PREFIX="⚠️"
-        shift
-        ;;
-    --info)
-        PREFIX="ℹ️"
-        shift
-        ;;
-    *)
-        PREFIX="📡"
-        ;;
-esac
+MESSAGE="$1"
 
-MESSAGE="$PREFIX *ADS-B Feeder*
-$1"
+# MarkdownV2 Escaping für Sonderzeichen
+# Escape: _ * [ ] ( ) ~ ` > # + - = | { } . !
+escape_markdownv2() {
+    local text="$1"
+    # Backslash ZUERST escapen
+    text="${text//\\/\\\\}"
+    # Dann alle anderen Sonderzeichen
+    text="${text//_/\\_}"
+    text="${text//\*/\\*}"
+    text="${text//[/\\[}"
+    text="${text//]/\\]}"
+    text="${text//(/\\(}"
+    text="${text//)/\\)}"
+    text="${text//~/\\~}"
+    text="${text//\`/\\\`}"
+    text="${text//>/\\>}"
+    text="${text//#/\\#}"
+    text="${text//+/\\+}"
+    text="${text//-/\\-}"
+    text="${text//=/\\=}"
+    text="${text//|/\\|}"
+    text="${text//\{/\\\{}"
+    text="${text//\}/\\\}}"
+    text="${text//./\\.}"
+    text="${text//!/\\!}"
+    echo "$text"
+}
 
-# Sende Nachricht
-curl -s --max-time 10 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-    -d chat_id="${TELEGRAM_CHAT_ID}" \
-    -d text="${MESSAGE}" \
-    -d parse_mode="Markdown" \
+# Escape die Nachricht
+ESCAPED_MESSAGE=$(escape_markdownv2 "$MESSAGE")
+
+# Sende mit MarkdownV2
+curl -s --max-time 10 \
+    --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+    --data-urlencode "text=${ESCAPED_MESSAGE}" \
+    --data-urlencode "parse_mode=MarkdownV2" \
+    "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
     > /dev/null 2>&1
 
 exit $?

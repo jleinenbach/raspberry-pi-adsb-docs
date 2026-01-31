@@ -5,12 +5,11 @@ set -o pipefail
 # Versuche: 5min → 10min → 20min → 40min → 80min → 160min → aufgeben
 # Gesamtzeit bis Eskalation: ~5 Stunden
 #
-# v2.0 - 2026-01-19: Telegram-Integration, proaktive Überwachung
+# v2.1 - 2026-01-29: OGN-RF Health Check mit Port 8080 Abfrage
 #===============================================================================
-# Fix 2026-01-25: source durch sichere Config-Ladung ersetzt
 
 DEPENDENCIES="NetworkManager chronyd dbus systemd-udevd"
-FEEDERS="readsb piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat tar1090 graphs1090 adsbexchange-stats dragonsync"
+FEEDERS="readsb piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat tar1090 graphs1090 adsbexchange-stats ogn-rf-procserv ogn-decode-procserv ogn2dump1090 dragonsync aircraft-alert-notifier ogn-balloon-notifier drone-alert-notifier"
 LOG="/var/log/feeder-watchdog.log"
 FAIL_DIR="/var/run/feeder-watchdog"
 MAX_FAILURES=6
@@ -63,6 +62,41 @@ notify() {
         -d chat_id="${TELEGRAM_CHAT_ID}" \
         -d text="${emoji} *Watchdog*: ${message}" \
         -d parse_mode="Markdown" > /dev/null 2>&1
+}
+
+#-------------------------------------------------------------------------------
+# OGN-RF Health Check - unterscheidet Benchmarking von echten Fehlern
+#-------------------------------------------------------------------------------
+check_ogn_rf_health() {
+    # Ist der Service laut systemd active?
+    if ! systemctl is-active ogn-rf-procserv &>/dev/null; then
+        echo "service_down"
+        return 1
+    fi
+    
+    # Ist Port 8080 erreichbar?
+    if curl -s --max-time 2 http://localhost:8080/status.html > /dev/null 2>&1; then
+        echo "healthy"
+        return 0
+    fi
+    
+    # Port nicht erreichbar - prüfe ob procServ läuft und CPU-Last
+    if pgrep -f "procServ.*50000.*ogn-rf" &>/dev/null; then
+        # Prüfe CPU-Last des ogn-rf Prozesses
+        local cpu=$(ps aux | grep "[.]./ogn-rf SteGau.conf" | awk '{print int($3)}')
+        if [ "$cpu" -gt 50 ]; then
+            # Hohe CPU-Last = wahrscheinlich FFTW Benchmarking
+            echo "benchmarking"
+            return 2
+        else
+            # Niedriger CPU, aber Port nicht offen = Problem
+            echo "unhealthy"
+            return 1
+        fi
+    else
+        echo "crashed"
+        return 1
+    fi
 }
 
 #-------------------------------------------------------------------------------
@@ -130,6 +164,31 @@ try_repair_service() {
     local svc="$1"
     local type="$2"
 
+    # Spezialbehandlung für ogn-rf-procserv
+    if [ "$svc" = "ogn-rf-procserv" ]; then
+        local health=$(check_ogn_rf_health)
+        
+        if [ "$health" = "healthy" ]; then
+            if [ -f "$FAIL_DIR/$svc.failures" ]; then
+                log "OK: $svc läuft wieder - Fehlerzähler zurückgesetzt"
+                notify "ok" "$svc läuft wieder (Benchmarking abgeschlossen)"
+                reset_failures "$svc"
+            fi
+            return 0
+        elif [ "$health" = "benchmarking" ]; then
+            # Benchmarking - nicht als Fehler behandeln, aber loggen
+            if [ ! -f "$FAIL_DIR/$svc.benchmarking" ]; then
+                log "INFO: $svc läuft FFTW Benchmarking (10-15 Min, CPU ~90%)"
+                touch "$FAIL_DIR/$svc.benchmarking"
+            fi
+            return 0
+        else
+            # Echtes Problem - normale Reparatur
+            rm -f "$FAIL_DIR/$svc.benchmarking"
+            # Fall through zu normaler Behandlung
+        fi
+    fi
+
     STATUS=$(systemctl is-active "$svc" 2>/dev/null)
 
     if [ "$STATUS" = "active" ]; then
@@ -139,6 +198,19 @@ try_repair_service() {
             reset_failures "$svc"
         fi
         return 0
+    fi
+
+    # "activating" ist normaler Übergangszustand beim Start - nicht eingreifen!
+    if [ "$STATUS" = "activating" ]; then
+        # Nur beim ersten Mal loggen (kein Spam)
+        if [ ! -f "$FAIL_DIR/$svc.activating_seen" ]; then
+            log "INFO: $svc ist activating - warte auf selbständige Aktivierung"
+            touch "$FAIL_DIR/$svc.activating_seen"
+        fi
+        return 0
+    else
+        # Wenn nicht mehr activating, lösche Marker
+        rm -f "$FAIL_DIR/$svc.activating_seen"
     fi
 
     if is_given_up "$svc"; then
@@ -178,10 +250,12 @@ try_repair_service() {
         reset_failures "$svc"
         return 0
     else
-        local new_count=$(record_failure "$svc")
-        log "FEHLER: $svc Neustart fehlgeschlagen ($new_count/$MAX_FAILURES)"
-        if [ "$new_count" -eq 3 ]; then
-            notify "warning" "$svc: 3. Fehlversuch - nächster in 40min"
+        local new_failures=$(record_failure "$svc")
+        log "FEHLER: $svc ist jetzt $NEW_STATUS (Fehlschlag $new_failures/$MAX_FAILURES)"
+        if [ "$new_failures" -eq "$MAX_FAILURES" ]; then
+            log "ESKALATION: $svc nach $MAX_FAILURES Versuchen (~5h) aufgegeben → Claude-Wartung"
+            notify "error" "$svc nach 5h Versuchen aufgegeben. Warte auf Claude-Wartung um 07:00."
+            touch "$FAIL_DIR/$svc.given_up"
         fi
         PROBLEMS=$((PROBLEMS + 1))
         return 1
@@ -224,442 +298,50 @@ check_network() {
     log "NETZWERK: Keine Verbindung (Versuch $((failures + 1))/$MAX_FAILURES, nächster in $next_wait)"
 
     if [ "$failures" -eq 0 ]; then
-        notify "warning" "Netzwerk offline - starte Reparatur"
+        notify "warning" "Netzwerk offline - versuche Reparatur"
     fi
 
-    systemctl restart NetworkManager 2>/dev/null
-    sleep 5
-
-    if ping -c 1 -W 5 8.8.8.8 &>/dev/null; then
-        log "OK: Netzwerk wiederhergestellt"
-        notify "ok" "Netzwerk wiederhergestellt"
-        reset_failures "network"
-        return 0
-    else
-        record_failure "network"
-        log "FEHLER: Netzwerk weiterhin nicht erreichbar"
-        return 1
-    fi
+    record_failure "network"
+    return 1
 }
 
 #-------------------------------------------------------------------------------
-# RTL-SDR Check
-#-------------------------------------------------------------------------------
-check_rtlsdr() {
-    if lsusb | grep -qi "RTL2832"; then
-        if [ -f "$FAIL_DIR/rtlsdr.failures" ]; then
-            notify "ok" "RTL-SDR wieder erkannt"
-        fi
-        reset_failures "rtlsdr"
-        return 0
-    fi
-
-    if is_given_up "rtlsdr"; then
-        return 1
-    fi
-
-    local failures=$(get_failure_count "rtlsdr")
-
-    if [ "$failures" -ge "$MAX_FAILURES" ]; then
-        if [ ! -f "$FAIL_DIR/rtlsdr.given_up" ]; then
-            log "ESKALATION: RTL-SDR Hardware-Problem → Claude-Wartung"
-            notify "error" "RTL-SDR seit 5h nicht erkannt - Hardware-Problem?"
-            touch "$FAIL_DIR/rtlsdr.given_up"
-        fi
-        return 1
-    fi
-
-    if ! should_try_now "rtlsdr"; then
-        return 1
-    fi
-
-    log "HARDWARE: RTL-SDR nicht erkannt (Versuch $((failures + 1))/$MAX_FAILURES)"
-
-    if [ "$failures" -eq 0 ]; then
-        notify "warning" "RTL-SDR nicht erkannt - versuche USB-Reset"
-    fi
-
-    if [ "$failures" -lt 3 ]; then
-        echo "1-1" | sudo tee /sys/bus/usb/drivers/usb/unbind 2>/dev/null
-        sleep 2
-        echo "1-1" | sudo tee /sys/bus/usb/drivers/usb/bind 2>/dev/null
-        sleep 3
-    fi
-
-    if lsusb | grep -qi "RTL2832"; then
-        log "OK: RTL-SDR nach Reset erkannt"
-        notify "ok" "RTL-SDR nach USB-Reset erkannt"
-        reset_failures "rtlsdr"
-        systemctl restart readsb 2>/dev/null
-        return 0
-    else
-        record_failure "rtlsdr"
-        return 1
-    fi
-}
-
-#-------------------------------------------------------------------------------
-# Proaktive Überwachung: Flugzeuge und Signal
-#-------------------------------------------------------------------------------
-check_data_quality() {
-    if ! systemctl is-active readsb &>/dev/null; then
-        return
-    fi
-    if ! lsusb | grep -qi "RTL2832"; then
-        return
-    fi
-
-    local aircraft_file="/run/readsb/aircraft.json"
-    local stats_file="/run/readsb/stats.json"
-
-    [ ! -f "$aircraft_file" ] && return
-
-    local aircraft_count=$(jq '.aircraft | length' "$aircraft_file" 2>/dev/null || echo "-1")
-    local msg_rate=$(jq -r '.last1min.messages // 0' "$stats_file" 2>/dev/null || echo "0")
-    msg_rate=$((msg_rate / 60))
-
-    local no_aircraft_marker="$FAIL_DIR/no_aircraft.warned"
-
-    if [ "$aircraft_count" -eq 0 ] && [ "$msg_rate" -eq 0 ]; then
-        if [ ! -f "$no_aircraft_marker" ]; then
-            log "WARNUNG: Keine Flugzeuge UND keine Nachrichten - Empfangsproblem?"
-            notify "warning" "Keine Flugzeuge und keine Nachrichten - Antenne/SDR prüfen?"
-            touch "$no_aircraft_marker"
-        fi
-    else
-        rm -f "$no_aircraft_marker"
-    fi
-
-    if [ "$msg_rate" -gt 0 ]; then
-        local signal=$(jq -r '.last1min.local.peak_signal // -99' "$stats_file" 2>/dev/null)
-        local signal_marker="$FAIL_DIR/signal_warning.warned"
-
-        # Schwellenwert -0.3 dB: erst darüber warnen (reduziert Fehlalarme)
-        if awk "BEGIN {exit !($signal > -0.3)}" 2>/dev/null; then
-            if [ ! -f "$signal_marker" ]; then
-                log "WARNUNG: Signal übersteuert (${signal}dB) - Gain reduzieren?"
-                notify "warning" "Signal übersteuert (${signal}dB) - Gain zu hoch?"
-                touch "$signal_marker"
-            fi
-        else
-            rm -f "$signal_marker"
-        fi
-    fi
-}
-
-#-------------------------------------------------------------------------------
-# Hauptlogik
-#-------------------------------------------------------------------------------
-#-------------------------------------------------------------------------------
-# Temperaturüberwachung
-#-------------------------------------------------------------------------------
-check_temperature() {
-    local temp_raw=$(vcgencmd measure_temp 2>/dev/null | grep -oP '[0-9.]+')
-    local temp=${temp_raw%.*}  # Integer
-    
-    if [ -z "$temp" ]; then
-        log "WARNUNG: Temperatur nicht lesbar"
-        return
-    fi
-    
-    if [ "$temp" -ge 80 ]; then
-        log "KRITISCH: CPU-Temperatur ${temp_raw}°C - Throttling möglich!"
-        notify error "CPU ${temp_raw}°C - Throttling-Gefahr!"
-        PROBLEMS=$((PROBLEMS + 1))
-    elif [ "$temp" -ge 70 ]; then
-        log "WARNUNG: CPU-Temperatur ${temp_raw}°C"
-        # Nur einmal pro Stunde warnen
-        local warn_file="$FAIL_DIR/temp_warning"
-        local now=$(date +%s)
-        local last_warn=$(cat "$warn_file" 2>/dev/null || echo 0)
-        if [ $((now - last_warn)) -gt 3600 ]; then
-            notify warning "CPU ${temp_raw}°C - Hohe Temperatur"
-            echo "$now" > "$warn_file"
-        fi
-    fi
-}
-
-#-------------------------------------------------------------------------------
-# Gain-Balance Überwachung (triggert autogain bei Extremwerten)
-#-------------------------------------------------------------------------------
-check_gain_balance() {
-    local stats_file="/run/readsb/stats.json"
-    local gain_state_file="$FAIL_DIR/gain_extreme"
-    local gain_cooldown_file="$FAIL_DIR/gain_cooldown"
-    
-    # Extreme Schwellenwerte (autogain nutzt 0.5-7%)
-    local LOW_EXTREME="0.3"
-    local HIGH_EXTREME="10.0"
-    local REQUIRED_CHECKS=6  # 6x5min = 30 Minuten
-    
-    # Cooldown nach autogain (20 min)
-    if [ -f "$gain_cooldown_file" ]; then
-        local cooldown_start=$(cat "$gain_cooldown_file")
-        local now=$(date +%s)
-        if [ $((now - cooldown_start)) -lt 1200 ]; then
-            return
-        fi
-        rm -f "$gain_cooldown_file"
-    fi
-    
-    [ ! -f "$stats_file" ] && return
-    
-    local strong=$(jq -r ".total.local.strong_signals // 0" "$stats_file" 2>/dev/null)
-    local total=$(jq -r ".total.local.accepted | add // 1" "$stats_file" 2>/dev/null)
-    
-    [ "$total" -lt 5000 ] && return
-    
-    local percent=$(awk "BEGIN {printf \"%.2f\", $strong * 100 / $total}")
-    
-    local extreme=0
-    local direction=""
-    if awk "BEGIN {exit !($percent < $LOW_EXTREME)}"; then
-        extreme=1
-        direction="niedrig"
-    elif awk "BEGIN {exit !($percent > $HIGH_EXTREME)}"; then
-        extreme=1
-        direction="hoch"
-    fi
-    
-    if [ "$extreme" -eq 1 ]; then
-        local consecutive=$(cat "$gain_state_file" 2>/dev/null || echo 0)
-        consecutive=$((consecutive + 1))
-        echo "$consecutive" > "$gain_state_file"
-        
-        if [ "$consecutive" -eq 3 ]; then
-            notify "warning" "Gain extrem $direction: ${percent}% (beobachte...)"
-        fi
-        
-        if [ "$consecutive" -ge "$REQUIRED_CHECKS" ]; then
-            log "AUTOGAIN: Extrem $direction (${percent}%) seit 30 min - triggere autogain"
-            notify "warning" "Gain-Korrektur: ${percent}% seit 30 min"
-            
-            local result=$(/usr/local/bin/autogain1090 2>&1)
-            log "AUTOGAIN: $result"
-            
-            if echo "$result" | grep -q "gain to"; then
-                notify "ok" "Gain angepasst: $result"
-            fi
-            
-            rm -f "$gain_state_file"
-            date +%s > "$gain_cooldown_file"
-        fi
-    else
-        rm -f "$gain_state_file"
-    fi
-}
-# Feed-Validierung (nicht nur Service-Status)
-#-------------------------------------------------------------------------------
-check_feed_data() {
-    local aircraft_file="/run/readsb/aircraft.json"
-    
-    if [ ! -f "$aircraft_file" ]; then
-        log "WARNUNG: aircraft.json nicht gefunden"
-        return
-    fi
-    
-    local aircraft_count=$(jq ".aircraft | length" "$aircraft_file" 2>/dev/null || echo 0)
-    local hour=$(date +%H)
-    local threshold=0
-    local period="nachts"
-    
-    # Dynamische Schwelle: Tags (06-22) mindestens 3, nachts 0 OK
-    if [ "$hour" -ge 6 ] && [ "$hour" -lt 22 ]; then
-        threshold=2
-        period="tags"
-    fi
-    
-    local low_file="$FAIL_DIR/low_aircraft"
-    
-    if [ "$aircraft_count" -le "$threshold" ]; then
-        local now=$(date +%s)
-        local first_low=$(cat "$low_file" 2>/dev/null || echo "$now")
-        [ ! -f "$low_file" ] && echo "$now" > "$low_file"
-        
-        local duration=$((now - first_low))
-        if [ "$duration" -gt 600 ]; then  # 10 Minuten
-            log "KRITISCH: Nur $aircraft_count Flugzeuge ($period) seit $((duration/60)) min!"
-            notify error "Nur $aircraft_count Flugzeuge ($period, >10min) - Empfangsproblem?"
-            PROBLEMS=$((PROBLEMS + 1))
-        fi
-    else
-        rm -f "$low_file"
-    fi
-}
-
-#-------------------------------------------------------------------------------
-# MLAT-Sync-Status
-#-------------------------------------------------------------------------------
-check_mlat_sync() {
-    # Prüfe ob MLAT-Verbindungen aktiv sind
-    local mlat_connections=$(ss -tn state established 2>/dev/null | grep -cE ':31090|:64590|:30104')
-
-    if [ "$mlat_connections" -lt 2 ]; then
-        # Nur loggen, kein Alarm (MLAT ist optional)
-        log "INFO: Nur $mlat_connections MLAT-Verbindungen aktiv"
-    fi
-}
-
-#-------------------------------------------------------------------------------
-# SDR-Frozen Check: Erkennt eingefrorenen RTL-SDR Dongle
-# Symptom: readsb läuft, aber messages-Zähler steigt nicht mehr
-#-------------------------------------------------------------------------------
-check_sdr_frozen() {
-    local aircraft_file="/run/readsb/aircraft.json"
-    local state_file="$FAIL_DIR/sdr_messages_state"
-    local frozen_count_file="$FAIL_DIR/sdr_frozen_count"
-
-    # Nur prüfen wenn readsb aktiv und SDR erkannt
-    if ! systemctl is-active readsb &>/dev/null; then
-        return
-    fi
-    if ! lsusb | grep -qi "RTL2832"; then
-        return
-    fi
-    [ ! -f "$aircraft_file" ] && return
-
-    # Aktuelle messages-Zahl lesen
-    local current_messages=$(jq -r '.messages // 0' "$aircraft_file" 2>/dev/null)
-    [ -z "$current_messages" ] || [ "$current_messages" = "null" ] && return
-
-    # Vorherigen Wert laden
-    local prev_messages=$(cat "$state_file" 2>/dev/null || echo "0")
-
-    # Aktuellen Wert speichern
-    echo "$current_messages" > "$state_file"
-
-    # Erster Durchlauf - noch kein Vergleich möglich
-    [ "$prev_messages" = "0" ] && return
-
-    # Prüfen ob messages gestiegen sind
-    if [ "$current_messages" -le "$prev_messages" ]; then
-        # Messages stagnieren - Zähler erhöhen
-        local frozen_count=$(cat "$frozen_count_file" 2>/dev/null || echo "0")
-        frozen_count=$((frozen_count + 1))
-        echo "$frozen_count" > "$frozen_count_file"
-
-        if [ "$frozen_count" -eq 2 ]; then
-            log "WARNUNG: SDR möglicherweise eingefroren - messages stagniert bei $current_messages"
-        fi
-
-        # Nach 3 Checks (15 min) → Neustart
-        if [ "$frozen_count" -ge 3 ]; then
-            log "SDR-FROZEN: Messages seit 15min bei $current_messages - starte readsb neu"
-            notify "warning" "SDR eingefroren (messages=$current_messages seit 15min) - Neustart"
-
-            systemctl restart readsb
-            sleep 5
-
-            if systemctl is-active readsb &>/dev/null; then
-                log "SDR-FROZEN: readsb erfolgreich neugestartet"
-                notify "ok" "readsb nach SDR-Freeze neugestartet"
-            else
-                log "SDR-FROZEN: readsb Neustart fehlgeschlagen!"
-                notify "error" "readsb Neustart nach SDR-Freeze fehlgeschlagen"
-            fi
-
-            # State zurücksetzen
-            rm -f "$frozen_count_file" "$state_file"
-        fi
-    else
-        # Messages steigen normal - Zähler zurücksetzen
-        rm -f "$frozen_count_file"
-    fi
-}
-
-#-------------------------------------------------------------------------------
-# AtomS3 Remote ID Receiver Check
-# - Warnung max alle 6 Stunden wenn USB fehlt
-# - zmq-decoder nur starten wenn /dev/remoteid existiert
+# AtomS3 Check (nur wenn Device existiert)
 #-------------------------------------------------------------------------------
 check_atoms3() {
-    local warn_file="$FAIL_DIR/atoms3_missing_warned"
-    local warn_interval=21600  # 6 Stunden in Sekunden
-
-    if [ -e "/dev/remoteid" ]; then
-        # USB vorhanden - zmq-decoder sollte laufen
-        if [ -f "$warn_file" ]; then
-            log "OK: AtomS3 wieder angeschlossen"
-            notify "ok" "AtomS3 Remote ID Receiver wieder angeschlossen"
-            rm -f "$warn_file"
-        fi
-
-        # zmq-decoder starten falls nicht aktiv
-        if ! systemctl is-active zmq-decoder &>/dev/null; then
-            log "AtomS3: Starte zmq-decoder"
-            systemctl start zmq-decoder 2>/dev/null
-            sleep 2
-            if systemctl is-active zmq-decoder &>/dev/null; then
-                log "OK: zmq-decoder gestartet"
-            fi
-        fi
-    else
-        # USB fehlt - zmq-decoder sollte inaktiv sein (BindsTo stoppt automatisch)
-        # Warnung max alle 6 Stunden
-        local now=$(date +%s)
-        local last_warn=$(cat "$warn_file" 2>/dev/null || echo 0)
-        local elapsed=$((now - last_warn))
-
-        if [ "$elapsed" -ge "$warn_interval" ]; then
-            log "INFO: AtomS3 nicht angeschlossen (/dev/remoteid fehlt)"
-            notify "info" "AtomS3 Remote ID nicht angeschlossen"
-            echo "$now" > "$warn_file"
-        fi
+    if [ ! -e "/dev/remoteid" ]; then
+        reset_failures "zmq-decoder"
+        return 0
     fi
+
+    if systemctl is-active zmq-decoder &>/dev/null; then
+        if [ -f "$FAIL_DIR/zmq-decoder.failures" ]; then
+            log "OK: zmq-decoder läuft wieder"
+            reset_failures "zmq-decoder"
+        fi
+        return 0
+    fi
+
+    try_repair_service "zmq-decoder" "optional"
 }
+
 #-------------------------------------------------------------------------------
-
-for svc in $DEPENDENCIES; do
-    try_repair_service "$svc" "dependency"
-done
-
+# Main Loop
+#-------------------------------------------------------------------------------
 check_network
-check_rtlsdr
 
-for svc in $FEEDERS; do
-    try_repair_service "$svc" "feeder"
+for dep in $DEPENDENCIES; do
+    try_repair_service "$dep" "critical"
 done
 
-if ! timeout 3 bash -c "echo '' > /dev/tcp/localhost/30005" 2>/dev/null; then
-    if ! is_given_up "dataport" && should_try_now "dataport"; then
-        log "DATENPORT: Port 30005 antwortet nicht"
-        if [ "$(get_failure_count dataport)" -eq 0 ]; then
-            notify "warning" "Port 30005 antwortet nicht - starte readsb neu"
-        fi
-        systemctl restart readsb
-        sleep 5
-        if ! timeout 3 bash -c "echo '' > /dev/tcp/localhost/30005" 2>/dev/null; then
-            record_failure "dataport"
-        else
-            reset_failures "dataport"
-            notify "ok" "Port 30005 wieder erreichbar"
-        fi
-    fi
-else
-    if [ -f "$FAIL_DIR/dataport.failures" ]; then
-        notify "ok" "Port 30005 wieder erreichbar"
-    fi
-    reset_failures "dataport"
-fi
+for feeder in $FEEDERS; do
+    try_repair_service "$feeder" "feeder"
+done
 
-check_data_quality
-check_temperature
-check_feed_data
-check_mlat_sync
-check_sdr_frozen
-check_gain_balance
 check_atoms3
 
-# Mitternacht-Reset (nur einmal pro Tag!)
-MIDNIGHT_MARKER="$FAIL_DIR/midnight_reset_$(date +%Y-%m-%d)"
-if [ "$(date +%H)" = "00" ] && [ ! -f "$MIDNIGHT_MARKER" ]; then
-    rm -f "$FAIL_DIR"/*.given_up 2>/dev/null
-    rm -f "$FAIL_DIR"/midnight_reset_* 2>/dev/null
-    touch "$MIDNIGHT_MARKER"
-    log "INFO: Mitternacht - Aufgegeben-Marker zurückgesetzt für neuen Tag"
-fi
-
-if [ -f "$LOG" ] && [ $(wc -l < "$LOG") -gt 1000 ]; then
+# Log-Rotation (max 1000 Zeilen)
+if [ $(wc -l < "$LOG" 2>/dev/null || echo 0) -gt 1000 ]; then
     tail -500 "$LOG" > "$LOG.tmp" && chmod 644 "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 fi
 

@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""
+Aircraft Alert Notifier - Telegram alerts for interesting aircraft
+Monitors readsb aircraft.json for:
+- Military low & close
+- Extremely low altitude
+- Emergency squawks
+- Fast low-level
+- Helicopters nearby (hospital traffic)
+- Loud & close
+"""
+
+import json
+import time
+import subprocess
+import logging
+import sys
+from datetime import datetime
+from pathlib import Path
+
+# Configuration
+AIRCRAFT_JSON = "/run/readsb/aircraft.json"
+STATE_FILE = "/var/lib/claude-pending/aircraft-alert-state.json"
+CHECK_INTERVAL = 10  # seconds
+
+# Alert criteria (all can be active simultaneously)
+ALERTS = {
+    "military_low": {
+        "name": "🚁 Militär tief & nah",
+        "reason": "Deutsches Militär unter 3000ft innerhalb 20km",
+        "enabled": True,
+        "check": lambda ac: (
+            ac.get("hex", "").startswith(("3c", "3d", "3e", "3f"))  # German ICAO
+            and ac.get("alt_baro", 99999) < 3000  # Below 3000ft
+            and ac.get("r_dst", 999) < 10.8  # <20km = ~10.8nm
+        ),
+        "cooldown": 3600,  # 1h per aircraft
+    },
+    "extremely_low": {
+        "name": "✈️ Extrem tief",
+        "reason": "Flugzeug unter 1000ft (300m) innerhalb 15km",
+        "enabled": True,
+        "check": lambda ac: (
+            ac.get("alt_baro", 99999) < 1000  # Below 1000ft (~300m)
+            and ac.get("r_dst", 999) < 8.1  # <15km = ~8.1nm
+        ),
+        "cooldown": 1800,  # 30min
+    },
+    "emergency": {
+        "name": "🚨 Emergency",
+        "reason": "Notfall-Squawk innerhalb 100km",
+        "enabled": True,
+        "check": lambda ac: (
+            ac.get("squawk", "") in ["7700", "7600", "7500"]  # Emergency codes
+            and ac.get("r_dst", 999) < 54  # <100km = ~54nm
+        ),
+        "cooldown": 300,  # 5min (important!)
+    },
+    "fast_lowlevel": {
+        "name": "⚡ Schneller Tiefflieger",
+        "reason": "Über 400kt unter 5000ft innerhalb 50km",
+        "enabled": True,
+        "check": lambda ac: (
+            ac.get("alt_baro", 99999) < 5000  # Below 5000ft (~1500m)
+            and ac.get("gs", 0) > 400  # >400 knots
+            and ac.get("r_dst", 999) < 27  # <50km = ~27nm
+        ),
+        "cooldown": 1800,  # 30min
+    },
+    "helicopter_near": {
+        "name": "🚁 Hubschrauber nah",
+        "reason": "Hubschrauber innerhalb 9km (Klinikum-Verkehr)",
+        "enabled": True,
+        "check": lambda ac: (
+            ac.get("category", "").startswith("H")  # Helicopter category
+            and ac.get("r_dst", 999) < 5  # <9km = ~5nm (2x Klinikum distance)
+        ),
+        "cooldown": 3600,  # 1h
+    },
+    "loud_close": {
+        "name": "🔊 Laut & Nah",
+        "reason": "Über 250kt unter 5000ft innerhalb 10km",
+        "enabled": True,
+        "check": lambda ac: (
+            ac.get("alt_baro", 99999) < 5000  # Below 5000ft
+            and ac.get("r_dst", 999) < 5.4  # <10km = ~5.4nm
+            and ac.get("gs", 0) > 250  # >250 knots (loud!)
+        ),
+        "cooldown": 1800,  # 30min
+    },
+}
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)-8s %(message)s',
+    stream=sys.stdout
+)
+
+
+def load_state():
+    """Load previously alerted aircraft"""
+    try:
+        if Path(STATE_FILE).exists():
+            with open(STATE_FILE, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logging.warning(f"Could not load state: {e}")
+    return {"alerts": {}}
+
+
+def save_state(state):
+    """Save alerted aircraft state"""
+    try:
+        Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        logging.error(f"Could not save state: {e}")
+
+
+def cleanup_old_alerts(state, max_age_hours=24):
+    """Remove alerts older than 24h"""
+    cutoff = datetime.now().timestamp() - (max_age_hours * 3600)
+    state["alerts"] = {
+        key: ts for key, ts in state["alerts"].items()
+        if ts > cutoff
+    }
+
+
+def send_telegram(message):
+    """Send Telegram notification"""
+    try:
+        subprocess.run(
+            ["/usr/local/sbin/telegram-notify", message],
+            timeout=10,
+            check=True,
+            capture_output=True
+        )
+        logging.info(f"Telegram sent ({len(message)} chars):\n{message}")
+        return True
+    except Exception as e:
+        logging.error(f"Telegram failed: {e}")
+        return False
+
+
+def format_aircraft_info(ac, alert_name, alert_reason):
+    """Format aircraft details for notification with metric units"""
+    msg = f"{alert_name}\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"Grund: {alert_reason}\n\n"
+
+    # ICAO ZUERST - wichtigste Kennung, IMMER anzeigen!
+    hex_id = ac.get("hex", "").upper()
+    if hex_id:
+        msg += f"📡 ICAO: {hex_id}\n"
+    else:
+        msg += f"📡 ICAO: ⚠️ Nicht verfügbar\n"
+    
+    # Callsign als zusätzliche Info
+    callsign = ac.get("flight", "").strip()
+    if callsign:
+        msg += f"✈️ Kennung: {callsign}\n"
+    else:
+        msg += f"✈️ Kennung: Keine übertragen\n"
+    
+    msg += "\n"
+
+
+    # Altitude (always show both units)
+    alt_baro = ac.get("alt_baro")
+    if alt_baro is not None:
+        alt_m = int(alt_baro * 0.3048)
+        msg += f"📏 Höhe: {alt_m}m ({alt_baro}ft)\n"
+    else:
+        msg += f"📏 Höhe: Unbekannt\n"
+
+    # Speed (always show both units)
+    gs = ac.get("gs")
+    if gs is not None:
+        gs_kmh = int(gs * 1.852)
+        msg += f"⚡ Geschwindigkeit: {gs_kmh}km/h ({int(gs)}kt)\n"
+    else:
+        msg += f"⚡ Geschwindigkeit: Unbekannt\n"
+
+    # Distance (km + nm)
+    r_dst = ac.get("r_dst")
+    if r_dst is not None:
+        dist_km = r_dst * 1.852
+        msg += f"📍 Entfernung: {dist_km:.1f}km ({r_dst:.1f}nm)\n"
+    else:
+        msg += f"📍 Entfernung: Unbekannt\n"
+
+    # Direction
+    r_dir = ac.get("r_dir")
+    if r_dir is not None:
+        directions = ["N", "NO", "O", "SO", "S", "SW", "W", "NW", "N"]
+        idx = int((r_dir + 22.5) / 45) % 8
+        msg += f"🧭 Richtung: {int(r_dir)}° ({directions[idx]})\n"
+
+    msg += "\n"
+
+    # Vertical rate
+    baro_rate = ac.get("baro_rate")
+    if baro_rate is not None:
+        rate_ms = baro_rate * 0.00508  # fpm to m/s
+        direction = "⬆️ Steigt" if baro_rate > 100 else "⬇️ Sinkt" if baro_rate < -100 else "➡️ Horizontal"
+        msg += f"{direction}: {abs(int(rate_ms * 60))}m/min ({abs(int(baro_rate))}fpm)\n"
+
+    # Category
+    cat = ac.get("category", "")
+    if cat:
+        cat_name = {
+            "A0": "Leicht (<7t)", "A1": "Klein (7-34t)", "A2": "Groß (34-136t)",
+            "A3": "Schwer (>136t)", "A4": "Hochleistung", "A5": "Schwer Rotorcraft",
+            "A6": "Rotorcraft", "A7": "Glider/Segelflugzeug", "B0": "Ballon",
+            "B1": "Fallschirm", "B2": "Hängegleiter", "B3": "Paraglider",
+            "B4": "Drachen", "C0": "Raumfahrzeug", "C1": "Ultraleicht",
+            "C2": "UAV", "C3": "Space Vehicle"
+        }
+        type_str = "Hubschrauber" if cat.startswith("H") else cat_name.get(cat, cat)
+        msg += f"🛩️ Typ: {type_str}\n"
+
+    # Squawk with explanation
+    squawk = ac.get("squawk", "")
+    if squawk:
+        squawk_explain = {
+            "7700": "🚨 NOTFALL (General Emergency)",
+            "7600": "📻 FUNKAUSFALL (Radio Failure)",
+            "7500": "🆘 ENTFÜHRUNG (Hijacking)",
+        }
+        msg += f"📡 Squawk: {squawk}"
+        if squawk in squawk_explain:
+            msg += f" - {squawk_explain[squawk]}"
+        msg += "\n"
+
+    # Military indicator
+    if hex_id.startswith(("3c", "3d", "3e", "3f")):
+        msg += f"🎖️ Deutsches Militär (ICAO 3C-3F)\n"
+
+    msg += f"\n⏰ Zeit: {datetime.now().strftime('%H:%M:%S')}"
+
+    return msg
+
+
+def check_aircraft():
+    """Check aircraft.json for alerts"""
+    try:
+        with open(AIRCRAFT_JSON, 'r') as f:
+            data = json.load(f)
+    except Exception as e:
+        logging.error(f"Could not read aircraft.json: {e}")
+        return
+
+    state = load_state()
+    cleanup_old_alerts(state)
+    now = datetime.now().timestamp()
+
+    for ac in data.get("aircraft", []):
+        hex_id = ac.get("hex", "")
+        if not hex_id:
+            continue
+
+        # Check all alert types
+        for alert_type, config in ALERTS.items():
+            if not config["enabled"]:
+                continue
+
+            # Check if this aircraft matches alert criteria
+            if config["check"](ac):
+                # Validierung: Nur senden wenn GENUG Daten vorhanden
+                has_altitude = ac.get("alt_baro") is not None
+                has_distance = ac.get("r_dst") is not None
+                
+                if not (has_altitude and has_distance):
+                    # Zu wenig Daten - überspringen
+                    logging.debug(f"Skip {alert_type} for {hex_id}: insufficient data")
+                    continue
+                
+                # Check cooldown
+                state_key = f"{alert_type}:{hex_id}"
+                last_alert = state["alerts"].get(state_key, 0)
+
+                if now - last_alert > config["cooldown"]:
+                    # Send alert!
+                    msg = format_aircraft_info(ac, config["name"], config["reason"])
+
+                    if send_telegram(msg):
+                        state["alerts"][state_key] = now
+                        save_state(state)
+                        logging.info(f"Alert sent: {alert_type} for {hex_id}")
+                    else:
+                        logging.warning(f"Alert failed: {alert_type} for {hex_id}")
+
+
+def main():
+    """Main monitoring loop"""
+    logging.info("=== Aircraft Alert Notifier started ===")
+    logging.info(f"Enabled alerts: {[name for name, cfg in ALERTS.items() if cfg['enabled']]}")
+
+    while True:
+        try:
+            check_aircraft()
+        except Exception as e:
+            logging.error(f"Error in check loop: {e}")
+
+        time.sleep(CHECK_INTERVAL)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        logging.info("Stopped by user")
+        sys.exit(0)
