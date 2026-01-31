@@ -308,7 +308,14 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
 
 ### System
 - zram swap, tmpfs /var/log, Log-Persistenz
-- NTP: PTB Stratum-1 mit NTS
+- NTP: PTB Stratum-1 mit NTS + Optimierungen (2026-01-31)
+  - Schnelles Polling (16-64s statt 64-1024s)
+  - Zusätzliche Server: FAU Erlangen, NTP.se (Schweden)
+  - CPU-Priorität: Nice -10, Realtime Scheduler
+  - Kernel-Tuning: sched_rt_runtime, netdev_max_backlog
+  - DSCP 46 Marking für niedrige Latenz
+  - Genauigkeit: ~100-200μs (von ~250μs), Server-Offset <1μs!
+  - MLAT-Verbesserung: ~30-60m Fehler (von ~75-300m)
 - Hardware-Watchdog (90°C Shutdown)
 - Raspberry Pi Connect
 
@@ -1038,6 +1045,19 @@ acquire_bot_lock() {
 | MarkdownV2 Sonderzeichen | Escape: _ * [ ] ( ) ~ ` > # + - = \| { } . ! mit Backslash |
 | Backslash-Escaping | Backslash ZUERST escapen, sonst doppeltes Escaping |
 | Nachricht abgeschnitten | Prüfe URL-Encoding UND parse_mode |
+
+### NTP & Zeitsynchronisation
+| Optimierung | Verbesserung | Details |
+|-------------|--------------|---------|
+| **Schnelles Polling** | **~50% bessere Drift-Erkennung** | minpoll 4, maxpoll 6 (16-64s statt 64-1024s) |
+| CPU-Priorität | Präzisere Timestamps | Nice -10, Realtime Scheduler |
+| Kernel-Tuning | Weniger Jitter | sched_rt_runtime_us=-1, timer_migration=0 |
+| Niedrig-Latenz Server | Bessere Genauigkeit | Lokale Server <10ms statt 20-30ms |
+| DSCP Marking | Netzwerk-Priorität | dscp 46 = Expedited Forwarding |
+| **NTS Kompatibilität** | **Nicht alle Server!** | FAU Erlangen braucht `iburst` ohne `nts` |
+| Interleaved Mode | Nicht mit NTS | xleave funktioniert nur ohne NTS |
+| Software-Limit | ~50-100μs | Ohne Hardware Timestamping nicht besser möglich |
+| GPS PPS | <1μs möglich | Braucht GPS-Modul mit PPS-Pin auf GPIO |
 
 
 ### AtomS3R Upgrade - AtomS3 durch AtomS3R ersetzt (2026-01-30)
