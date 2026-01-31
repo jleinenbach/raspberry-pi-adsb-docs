@@ -244,6 +244,13 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - Fix: ICAO wird IMMER angezeigt und kommt ZUERST (wichtigste Identifikation)
   - Fallback: "📡 ICAO: ⚠️ Nicht verfügbar" wenn hex_id fehlt
   - Reihenfolge: ICAO → Callsign → Technische Daten
+- **Fix: telegram-notify URL-Encoding + MarkdownV2 (2026-01-31)**
+  - Problem: Nachrichten wurden bei "&" abgeschnitten ("Militär tief & nah" → "Militär tief ")
+  - Root Cause 1: curl -d behandelt "&" als URL-Parameter-Trennzeichen
+  - Root Cause 2: Markdown (legacy) ohne Sonderzeichen-Escaping
+  - Fix 1: --data-urlencode statt -d für korrektes URL-Encoding
+  - Fix 2: parse_mode=MarkdownV2 mit Escaping aller Sonderzeichen (_ * [ ] ( ) ~ \` > # + - = | { } . \!)
+  - Referenz: https://core.telegram.org/bots/api#markdownv2-style
 - **RTL-SDR Blog Library v1.3.6 installiert:** Behebt "[R82XX] PLL not locked" Problem mit R828D-Tuner (2026-01-29)
   - Alte Debian librtlsdr (0.6.0-4 aus 2012) durch aktuelle RTL-SDR Blog Version ersetzt
   - Kompiliert und installiert nach `/usr/local/lib/` (überschreibt System-Paket)
@@ -1022,6 +1029,16 @@ acquire_bot_lock() {
 - Command-Lock: `cmd_name="${cmd#/}"` entfernt führenden Slash
 - Debug-Logging half zu verifizieren: Nur 1x handle_command, 1x send_message
 - Process Substitution `mapfile -t < <(...)` erstellt Child-Prozess (normal, kein Bug)
+
+### Telegram Bot API & Messaging
+| Problem | Lösung |
+|---------|--------|
+| **curl -d mit & Zeichen** | **& ist URL-Parameter-Trennzeichen! Nutze --data-urlencode** |
+| Telegram Markdown (legacy) | Deprecated! Nutze MarkdownV2 mit korrektem Escaping |
+| MarkdownV2 Sonderzeichen | Escape: _ * [ ] ( ) ~ ` > # + - = \| { } . ! mit Backslash |
+| Backslash-Escaping | Backslash ZUERST escapen, sonst doppeltes Escaping |
+| Nachricht abgeschnitten | Prüfe URL-Encoding UND parse_mode |
+
 
 ### AtomS3R Upgrade - AtomS3 durch AtomS3R ersetzt (2026-01-30)
 
