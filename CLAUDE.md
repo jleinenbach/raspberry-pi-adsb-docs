@@ -234,6 +234,11 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - Problem: Bei fehlendem Callsign wurde ICAO-Adresse doppelt angezeigt ("Kennung: 3d11f6" + "ICAO: 3D11F6")
   - Fix: Klare Trennung - "Kennung: Keine übertragen" oder Callsign, dann immer "ICAO: XYZ"
   - Grund: Militärflugzeuge übertragen oft nur Mode S ohne Callsign (OPSEC)
+- **Fix: Aircraft Alert Daten-Validierung (2026-01-31)**
+  - Problem: Alerts wurden auch bei unvollständigen Daten gesendet ("Höhe: Unbekannt, Geschwindigkeit: Unbekannt")
+  - Fix: Validierung vor Alert-Versand - benötigt alt_baro + r_dst (Höhe + Entfernung)
+  - Verhindert leere "Militär tief" Meldungen bei erst teilweise empfangenen Flugzeugen
+  - Groß-/Kleinschreibung korrigiert: "tief" statt "Tief"
 - **RTL-SDR Blog Library v1.3.6 installiert:** Behebt "[R82XX] PLL not locked" Problem mit R828D-Tuner (2026-01-29)
   - Alte Debian librtlsdr (0.6.0-4 aus 2012) durch aktuelle RTL-SDR Blog Version ersetzt
   - Kompiliert und installiert nach `/usr/local/lib/` (überschreibt System-Paket)
