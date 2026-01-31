@@ -230,6 +230,10 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - Entfernung & Himmelsrichtung (Drohne + Pilot)
   - Cooldown: 30 Minuten pro Drohne (vermeidet Spam)
   - Service: `drone-alert-notifier` (24 Services total)
+- **Fix: Aircraft Alert Callsign-Anzeige (2026-01-31)**
+  - Problem: Bei fehlendem Callsign wurde ICAO-Adresse doppelt angezeigt ("Kennung: 3d11f6" + "ICAO: 3D11F6")
+  - Fix: Klare Trennung - "Kennung: Keine übertragen" oder Callsign, dann immer "ICAO: XYZ"
+  - Grund: Militärflugzeuge übertragen oft nur Mode S ohne Callsign (OPSEC)
 - **RTL-SDR Blog Library v1.3.6 installiert:** Behebt "[R82XX] PLL not locked" Problem mit R828D-Tuner (2026-01-29)
   - Alte Debian librtlsdr (0.6.0-4 aus 2012) durch aktuelle RTL-SDR Blog Version ersetzt
   - Kompiliert und installiert nach `/usr/local/lib/` (überschreibt System-Paket)
