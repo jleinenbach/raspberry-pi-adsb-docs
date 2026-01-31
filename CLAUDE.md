@@ -196,7 +196,7 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - **6 Alert-Typen:** Militär tief/nah, Extrem tief, Emergency (7700/7600/7500), Schnelle Tiefflieger, Hubschrauber (9km Radius), Laut & Nah
   - **Heißluftballons:** OGN Type 11 via APRS-Stream (100km Filter)
   - **Vollständig metrisch + imperial:** Höhe, Geschwindigkeit, Entfernung mit Begründung
-  - **Services:** aircraft-alert-notifier, ogn-balloon-notifier (23 Services total)
+  - **Services:** aircraft-alert-notifier, ogn-balloon-notifier
   - Dokumentation: `docs/AIRCRAFT-ALERTS.md`
 - **Fix: Watchdog behandelt "activating" nicht mehr als Fehler (2026-01-30)**
   - Services im Status "activating" (normaler Übergangszustand 0-10s) werden nicht mehr "repariert"
@@ -223,6 +223,13 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - Alte Logik: >= 0 dB = ROT, < -20 dB = GELB (komplett falsch für RF-Signale)
   - Neue Logik: 0 bis -10 dB = 🟢 GRÜN (stark), -10 bis -20 dB = 🟡 GELB (OK), < -20 dB = 🔴 ROT (schwach)
   - RF-Regel: Je näher an 0 dB, desto BESSER das Signal!
+- **Drone Alert Notifier (2026-01-31):** Telegram-Benachrichtigung bei JEDER erkannten Drohne
+  - Überwacht DragonSync API kontinuierlich (5s Intervall)
+  - Detaillierte Info: UAS ID, MAC, Position, Höhe, Geschwindigkeit, Kurs
+  - **Piloten-Position:** GPS-Koordinaten des Piloten (falls übertragen)
+  - Entfernung & Himmelsrichtung (Drohne + Pilot)
+  - Cooldown: 30 Minuten pro Drohne (vermeidet Spam)
+  - Service: `drone-alert-notifier` (24 Services total)
 - **RTL-SDR Blog Library v1.3.6 installiert:** Behebt "[R82XX] PLL not locked" Problem mit R828D-Tuner (2026-01-29)
   - Alte Debian librtlsdr (0.6.0-4 aus 2012) durch aktuelle RTL-SDR Blog Version ersetzt
   - Kompiliert und installiert nach `/usr/local/lib/` (überschreibt System-Paket)
@@ -650,7 +657,7 @@ ODER: ESPHome Proxy (BLE) → ha-opendroneid → Home Assistant (MQTT)
 
 ---
 
-## Überwachte Services (23 + zmq-decoder)
+## Überwachte Services (24 + zmq-decoder)
 *Bot, Watchdog, Wartung müssen synchron sein und nach Kategorien trennen!*
 
 ### Core ADS-B (1)
@@ -673,8 +680,8 @@ ogn-rf-procserv, ogn-decode-procserv, ogn2dump1090
 ### DragonSync (1)
 dragonsync
 
-### Alert Services (2)
-aircraft-alert-notifier, ogn-balloon-notifier
+### Alert Services (3)
+aircraft-alert-notifier, ogn-balloon-notifier, drone-alert-notifier
 
 **Sonderfall:** `zmq-decoder` wird separat überwacht (nur wenn `/dev/remoteid` existiert)
 
