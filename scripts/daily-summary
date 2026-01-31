@@ -19,17 +19,65 @@ RAM_PCT=$(free | awk '/Mem:/ {printf "%.0f", $3/$2*100}')
 # CPU Temperatur
 TEMP=$(vcgencmd measure_temp 2>/dev/null | grep -oP "[0-9.]+" || echo "?")
 
-# Service Status (18 Services nach Kategorien)
+
+# Spannungsüberwachung
+THROTTLED=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
+THROTTLED="${THROTTLED:-0x0}"
+THROTTLED_DEC=$((THROTTLED))
+VOLT_BIT0=$((THROTTLED_DEC & 0x1))
+VOLT_BIT16=$((THROTTLED_DEC & 0x10000))
+VOLT_ICON="🟢"
+VOLT_STATUS="OK"
+if [ "$THROTTLED" = "0x0" ]; then
+    VOLT_ICON="🟢"
+    VOLT_STATUS="Stabil"
+elif [ "$VOLT_BIT0" -eq 1 ]; then
+    VOLT_ICON="🔴"
+    VOLT_STATUS="UNTERSPANNUNG!"
+elif [ "$VOLT_BIT16" -ne 0 ]; then
+    VOLT_ICON="🟡"
+    VOLT_STATUS="War niedrig"
+fi
+
+# NTP Zeitsynchronisation (seit 2026-01-31 optimiert)
+NTP_TRACKING=$(chronyc tracking 2>/dev/null)
+NTP_SYS_TIME=$(echo "$NTP_TRACKING" | grep "System time" | grep -oP '[0-9.]+' | head -1)
+NTP_RMS=$(echo "$NTP_TRACKING" | grep "RMS offset" | grep -oP '[0-9.]+' | head -1)
+NTP_UPDATE=$(echo "$NTP_TRACKING" | grep "Update interval" | grep -oP '[0-9.]+' | head -1)
+NTP_REF=$(echo "$NTP_TRACKING" | grep "Reference ID" | grep -oP '\(.*?\)' | tr -d '()')
+
+# Konvertiere zu μs (Mikrosekunden) für bessere Lesbarkeit
+if [ -n "$NTP_SYS_TIME" ]; then
+    NTP_SYS_US=$(awk "BEGIN {printf \"%.0f\", $NTP_SYS_TIME * 1000000}")
+else
+    NTP_SYS_US="?"
+fi
+if [ -n "$NTP_RMS" ]; then
+    NTP_RMS_US=$(awk "BEGIN {printf \"%.0f\", $NTP_RMS * 1000000}")
+else
+    NTP_RMS_US="?"
+fi
+
+# Icon basierend auf Genauigkeit
+NTP_ICON="🟢"
+if [ "$NTP_SYS_US" != "?" ] && [ "$NTP_SYS_US" -gt 500 ]; then
+    NTP_ICON="🟡"
+fi
+if [ "$NTP_SYS_US" != "?" ] && [ "$NTP_SYS_US" -gt 1000 ]; then
+    NTP_ICON="🔴"
+fi
+
+# Service Status (20 Services nach Kategorien)
 SERVICE_OK=0
 SERVICE_FAIL=""
-for svc in readsb piaware fr24feed adsbexchange-feed adsbexchange-mlat adsbexchange-stats tar1090 graphs1090 adsbfi-feed adsbfi-mlat opensky-feeder theairtraffic-feed rbfeeder airplanes-feed airplanes-mlat pfclient mlathub dragonsync; do
+for svc in readsb piaware fr24feed adsbexchange-feed adsbexchange-mlat adsbexchange-stats tar1090 graphs1090 adsbfi-feed adsbfi-mlat opensky-feeder theairtraffic-feed rbfeeder airplanes-feed airplanes-mlat pfclient mlathub ogn-rf-procserv ogn-decode-procserv ogn2dump1090 dragonsync; do
     if systemctl is-active "$svc" &>/dev/null; then
         ((SERVICE_OK++))
     else
         SERVICE_FAIL+=" ${svc%%-*}"
     fi
 done
-SERVICE_TOTAL=18
+SERVICE_TOTAL=21
 
 # Watchdog Eskalationen und Reparaturen (letzte 24h)
 # Berechne Zeitstempel von vor 24 Stunden
@@ -50,6 +98,21 @@ fi
 
 # CVEs mit verfügbaren Fixes
 CVES=$(debsecan --suite bookworm --only-fixed 2>/dev/null | wc -l)
+# OGN Statistiken
+if systemctl is-active ogn-decode-procserv &>/dev/null; then
+    OGN_HTML=$(curl -s http://localhost:8081/status.html 2>/dev/null)
+    OGN_12H=$(echo "$OGN_HTML" | grep -oP 'Aircrafts received over last 12 hours.*?<b>\s*\K[0-9]+' | head -1)
+    [ -z "$OGN_12H" ] && OGN_12H=0
+else
+    OGN_12H=0
+fi
+
+# Drohnen Statistiken
+if systemctl is-active dragonsync &>/dev/null; then
+    DRONES_24H=$(sudo journalctl -u dragonsync --since "24 hours ago" --no-pager 2>/dev/null | grep -oP 'mac.*?[0-9a-f:]{17}' | sort -u | wc -l 2>/dev/null || echo "0")
+else
+    DRONES_24H=0
+fi
 
 # Session-Status
 SESSION_INFO=""
@@ -80,6 +143,11 @@ MESSAGE="📊 *Täglicher Bericht* (vor Wartung)
 ⏱ Uptime: ${UPTIME}
 💾 RAM: ${RAM_PCT}%
 🌡 Temp: ${TEMP}°C
+${VOLT_ICON} Spannung: ${VOLT_STATUS}
+
+*NTP Zeitsync*
+${NTP_ICON} Offset: ${NTP_SYS_US}μs (RMS: ${NTP_RMS_US}μs)
+🔄 Update: ${NTP_UPDATE}s | 📡 ${NTP_REF}
 
 *Services* (${SERVICE_OK}/${SERVICE_TOTAL})
 ${SERVICE_ICON} $([ -z "$SERVICE_FAIL" ] && echo "Alle aktiv" || echo "Fehlt:$SERVICE_FAIL")
@@ -91,6 +159,8 @@ ${ESC_ICON} Eskalationen: ${ESCALATIONS}
 *Statistiken*
 ✈️ Flugzeuge gesamt: ${TRACKS}
 📡 Max Reichweite: ${MAX_RANGE} nm
+🪂 OGN gesamt (12h): ${OGN_12H}
+🚁 Drohnen (24h): ${DRONES_24H}
 
 *Sicherheit*
 ${CVE_ICON} CVEs mit Fix: ${CVES}${SESSION_INFO}
