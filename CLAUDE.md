@@ -836,6 +836,65 @@ sudo ldconfig
 # Services neu starten: ogn-rf, ogn-decode, rbfeeder
 ```
 
+### drone-mesh-mapper - Drone Remote ID Mapper
+**Repository:** https://github.com/colonelpanichacks/drone-mesh-mapper
+**Lokal:** `/home/pi/drone-mesh-mapper/`
+**Firmware:** `remoteid-mesh-dualcore/` (ESP32-S3 Dual-Core BLE+WiFi Remote ID)
+
+ESP32-basiertes Drohnen-Remote-ID-Empfangssystem für BLE und WiFi Broadcasts.
+
+**Features:**
+- BLE Remote ID Empfang (ASTM F3411-22a Standard)
+- WiFi Remote ID Empfang (Beacon Frames)
+- Dual-Core ESP32-S3 für paralleles BLE+WiFi Scanning
+- JSON-Output über USB Serial (ZMQ-Decoder kompatibel)
+- Mesh-Networking Support (LoRa)
+- FAA RID Lookup Integration
+
+**Unterstützte Hardware:**
+- Xiao ESP32-S3 (8MB Flash, kein PSRAM) - Original
+- **M5Stack AtomS3R (8MB Flash + 8MB PSRAM)** - Aktiv genutzt
+- Xiao ESP32-C3 (Single Core, WiFi only)
+- ESP32-C6 (Thread/Zigbee Support)
+
+**Firmware-Kompilierung für AtomS3R:**
+```bash
+cd /home/pi/drone-mesh-mapper/remoteid-mesh-dualcore
+# platformio.ini bereits konfiguriert mit [env:m5stack_atoms3r]
+/home/pi/.local/bin/pio run -e m5stack_atoms3r
+# Firmware: .pio/build/m5stack_atoms3r/firmware.bin
+```
+
+**Flash auf AtomS3R:**
+```bash
+# Services stoppen
+sudo systemctl stop zmq-decoder dragonsync
+# Flash
+/home/pi/.local/bin/pio run -e m5stack_atoms3r -t upload
+# Services starten
+sudo systemctl start zmq-decoder dragonsync
+```
+
+**PSRAM-spezifische Konfiguration:**
+```ini
+[env:m5stack_atoms3r]
+board = m5stack-atoms3
+board_build.arduino.memory_type = qio_opi
+build_flags =
+  -DBOARD_HAS_PSRAM
+  -mfix-esp32-psram-cache-issue
+```
+
+**Update-Check:**
+- Automatisch im Wartungsskript (`claude-respond-to-reports`)
+- Prüft auf neue Commits im main-Branch
+- Warnt bei verfügbaren Updates
+
+**Integration:**
+- zmq-decoder empfängt JSON von `/dev/remoteid` (AtomS3R USB)
+- DragonSync verarbeitet ZMQ-Stream (Port 4224)
+- Home Assistant via MQTT Discovery
+
 ### raspberry-pi-adsb-docs - System-Dokumentation
 **Repository:** https://github.com/jleinenbach/raspberry-pi-adsb-docs
 **Lokal:** `/home/pi/docs/`
@@ -926,6 +985,13 @@ cd /home/pi/docs/scripts
 | **Session-Response-Verzögerung** | **Bot muss claude-respond triggern bei User-Antwort (nicht nur Timer 1x täglich!)** |
 | **INITIAL_WAIT vs. SESSION_TIMEOUT** | **10min Quick-Response zu lang! 2min reicht, Session bleibt 24h offen** |
 | **Service TimeoutSec vs. Session** | **Session sagt 24h Zeit, aber Service MUSS länger als INITIAL_WAIT laufen!** |
+| **PSRAM-Firmware KRITISCH** | **ESP32-S3 mit PSRAM braucht spezifische Build-Flags, sonst Memory Leak nach ~10h!** |
+| **AtomS3 vs. AtomS3R** | **AtomS3R hat 8MB PSRAM, AtomS3 NICHT! Firmware ist NICHT kompatibel ohne PSRAM-Flags** |
+| **Board-Definition wichtig** | **m5stack-atoms3 (M5Stack) ≠ seeed_xiao_esp32s3 (Seeed), unterschiedliche Pin-Mappings** |
+| **PSRAM Build-Flags** | **`board_build.arduino.memory_type = qio_opi` + `-DBOARD_HAS_PSRAM -mfix-esp32-psram-cache-issue`** |
+| **PlatformIO für ESP32** | **PlatformIO besser als Arduino IDE für Board-spezifische Builds (automatische Toolchain)** |
+| **esptool erkennt PSRAM** | **Flash-Output zeigt "Embedded PSRAM XMB" wenn PSRAM vorhanden und erkannt** |
+| **Memory Leak Symptome** | **10h stabil, dann kontinuierliche Crashes/Reconnects = PSRAM nicht initialisiert** |
 
 ### Security Best Practices
 | Pattern | Warum |
@@ -1090,7 +1156,7 @@ acquire_bot_lock() {
 - Flash: 8MB
 - PSRAM: 8MB (eingebaut!)
 - MAC: E4:B3:23:FA:93:F4
-- Firmware: esp32s3-dual-rid.bin (1.4 MB)
+- Firmware: esp32s3-dual-rid.bin mit PSRAM-Support (1.1 MB)
 
 **Änderungen:**
 - udev-Regel: Serial Number spezifisch für AtomS3R
@@ -1102,3 +1168,33 @@ acquire_bot_lock() {
 - Deutlich mehr Drohnen gleichzeitig trackbar
 - Bessere Performance bei hoher Last
 - Zukunftssicher für große Events
+
+### AtomS3R PSRAM-Firmware-Kompilierung (2026-02-01)
+
+**Problem:** USB-Instabilität nach ~10h (alle 2-3s Reconnects seit 07:35)
+**Ursache:** Firmware ohne PSRAM-Flags → Memory Leak → Crash nach 10h
+
+**Root Cause:**
+- drone-mesh-mapper Firmware kompiliert für **Xiao ESP32-S3** (ohne PSRAM)
+- AtomS3R hat **8MB PSRAM**, aber Firmware nutzt es nicht
+- Symptome: 10h stabil, dann kontinuierliche USB-Disconnects (1506 Fehler/24h)
+
+**Lösung:**
+1. PlatformIO installiert (`pip3 install platformio --user`)
+2. Neue platformio.ini Environment `[env:m5stack_atoms3r]` erstellt:
+   - Board: `m5stack-atoms3`
+   - `board_build.arduino.memory_type = qio_opi`
+   - Build-Flags: `-DBOARD_HAS_PSRAM -mfix-esp32-psram-cache-issue`
+3. Firmware kompiliert: `.pio/build/m5stack_atoms3r/firmware.bin` (1.1 MB)
+4. Geflasht mit `pio run -e m5stack_atoms3r -t upload`
+
+**Resultat:**
+- USB-Disconnects: **VOR Flash:** Alle 2-3s | **NACH Flash:** 0 Disconnects (>1min stabil)
+- Chip korrekt erkannt: ESP32-S3-PICO-1 mit **Embedded PSRAM 8MB (AP_3v3)**
+- Services laufen: zmq-decoder + dragonsync active
+- **Langzeit-Test ausstehend:** Muss >10h stabil bleiben (vorher Crash nach 10h)
+
+**Build-Details:**
+- RAM: 14,4% (47.132 Bytes)
+- Flash: 33,0% (1.103.139 Bytes)
+- PSRAM-Support aktiviert und verifiziert
