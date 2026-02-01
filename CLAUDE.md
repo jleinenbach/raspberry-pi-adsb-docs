@@ -104,7 +104,7 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
 ## Pending Recommendations
 | Source | Recommendation | Risk |
 |--------|----------------|------|
-| AtomS3R | Langzeit-Test PSRAM-Firmware (>10h Uptime erforderlich) | Niedrig - Kurztest erfolgreich (11min stabil) |
+| - | Keine offenen Punkte | - |
 
 ---
 
@@ -281,6 +281,28 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - USB jetzt stabil (0 Disconnects), zmq-decoder funktional
   - Update-Check im Wartungsskript integriert (prüft auf neue Commits)
   - Quelle: https://github.com/colonelpanichacks/drone-mesh-mapper
+  - **REGRESSION (2026-02-01 07:35):** USB-Instabilität zurückgekehrt (1506 Fehler/24h) - Ursache: BLE-Fehler-Spam
+- **AtomS3R Firmware-Fix: BLE Error-Spam eliminiert (2026-02-01)**
+  - **Problem:** ESP32 BLE Stack spammte tausende Error-Messages über Serial → Buffer Overflow alle 4 Minuten
+  - **Root Cause:** `[E][BLEAdvertisedDevice.cpp:437] parseAdvertisement(): Failed to allocate 0 bytes for payload`
+  - **Symptome:**
+    - 26 JSON Decode Errors/minute (Parser erhielt BLE-Errors statt JSON)
+    - Buffer Overflow alle 4:24 Minuten (10KB voll mit Error-Messages)
+    - Keine Drohnen-Daten trotz funktionierendem Hardware
+  - **Fix 1 - BLE-Logs komplett unterdrückt:** `esp_log_level_set("*", ESP_LOG_NONE);` in setup()
+  - **Fix 2 - Atomare Serial-Ausgabe:** `Serial.flush()` nach jedem `Serial.println()` für garantierte Übertragung
+  - **Fix 3 - Status-Message JSON korrigiert:** `{"status":"Device is active and scanning"}` statt ungültiges Format
+  - **Ergebnis nach 5+ Minuten Test:**
+    - ✅ 0 BLE parseAdvertisement Errors (vorher: hunderte/minute)
+    - ✅ 0 JSON Decode Errors (vorher: 26/minute)
+    - ✅ 0 Buffer Overflows (vorher: alle 4 Minuten)
+  - **Firmware:** Selbst kompiliert v1.3.6 (1.05 MB, 33% Flash, 14.4% RAM)
+  - **Backup:** `src/main.cpp.backup-20260201-174613`
+  - **Repository:** Änderungen lokal in `/home/pi/drone-mesh-mapper/remoteid-mesh-dualcore/`
+- **zmq_decoder.py Parser verbessert (2026-02-01)**
+  - Robuster Multi-JSON-Parser mit Bracket-Matching (verarbeitet mehrere concatenierte JSON-Objekte)
+  - Buffer Overflow Protection (max 10KB) mit detailliertem Logging
+  - Backup: `/home/pi/DroneID/zmq_decoder.py.backup-20260201-*`
 - **Aircraft Alert System (2026-01-30):** Telegram-Benachrichtigungen für interessante Flugzeuge
   - **Service:** `aircraft-alert-notifier.service` - Überwacht alle 10s readsb aircraft.json
   - **6 Alert-Typen:** Militär tief & nah, Extrem tief, Emergency (7700/7600/7500), Schnelle Tiefflieger, Hubschrauber nah, Laut & nah
@@ -990,6 +1012,12 @@ cd /home/pi/docs/scripts
 | **Board-Definition wichtig** | **m5stack-atoms3 (M5Stack) ≠ seeed_xiao_esp32s3 (Seeed), unterschiedliche Pin-Mappings** |
 | **PSRAM Build-Flags** | **`board_build.arduino.memory_type = qio_opi` + `-DBOARD_HAS_PSRAM -mfix-esp32-psram-cache-issue`** |
 | **PlatformIO für ESP32** | **PlatformIO besser als Arduino IDE für Board-spezifische Builds (automatische Toolchain)** |
+| **ESP32 BLE Error-Spam** | **BLE Stack sendet Error-Messages über Serial trotz `esp_log_level_set()`! Nutze `esp_log_level_set("*", ESP_LOG_NONE)` für ALLE Logs** |
+| **ESP32 Log-System dual** | **ESP32 hat Console-Log (Monitor) UND Serial-Log! `esp_log_level_set()` unterdrückt nur Console, nicht Serial!** |
+| **Serial.flush() essentiell** | **`Serial.println()` ist NICHT atomar! Bei schnellen Writes können Messages vermischt werden → Immer `Serial.flush()` danach** |
+| **JSON über Serial** | **Mehrere schnelle JSON-Objekte können concatenieren → Parser braucht Bracket-Matching, nicht nur Zählung** |
+| **Buffer Overflow Diagnose** | **Bei Buffer Overflow: Erste 200 Zeichen + Bracket-Count loggen für Root-Cause-Analyse** |
+| **BLE parseAdvertisement Errors** | **"Failed to allocate 0 bytes" = BLE Stack Bug bei ungültigen Advertisements, nicht zu fixen → Log unterdrücken** |
 | **esptool erkennt PSRAM** | **Flash-Output zeigt "Embedded PSRAM XMB" wenn PSRAM vorhanden und erkannt** |
 | **Memory Leak Symptome** | **10h stabil, dann kontinuierliche Crashes/Reconnects = PSRAM nicht initialisiert** |
 
