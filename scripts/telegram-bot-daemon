@@ -726,6 +726,24 @@ _Oder einfach antworten_"
             handle_abbrechen
             return
             ;;
+        /frage)
+            if has_open_session; then
+                local question=$(jq -r '.question' "$SESSION_FILE" 2>/dev/null)
+                local created=$(jq -r '.created' "$SESSION_FILE" 2>/dev/null)
+                local remaining=$(get_session_remaining)
+                send_message "❓ *Offene Frage:*
+
+${question}
+
+⏱ Erstellt: ${created}
+⏳ Verbleibend: ${remaining}
+
+_Einfach antworten oder /abbrechen_"
+            else
+                send_message "💬 Keine offene Frage. /help"
+            fi
+            return
+            ;;
         /*)
             send_message "❓ Unbekannt. /help"
             return
@@ -735,6 +753,7 @@ _Oder einfach antworten_"
     if has_open_session; then
         echo "$text" > "$ANSWER_FILE"
         send_message "✅ Antwort erhalten, wird validiert..."
+        # Trigger claude-respond um Antwort zu verarbeiten        systemctl start claude-respond.service 2>/dev/null &
         log "Antwort auf offene Session: $text"
     else
         send_message "💬 Keine Frage offen. /help"

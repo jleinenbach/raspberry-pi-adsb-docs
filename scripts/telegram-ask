@@ -8,8 +8,8 @@ set -o pipefail
 
 # Fix 2026-01-25: source durch sichere Config-Ladung ersetzt
 # Sichere Config-Ladung (ohne source)
-TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN="YOUR_BOT_TOKEN_HERE"')
-TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID="YOUR_CHAT_ID_HERE"')
+TELEGRAM_BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN=" /etc/telegram-notify.conf 2>/dev/null | cut -d= -f2- | tr -d '"')
+TELEGRAM_CHAT_ID=$(grep "^TELEGRAM_CHAT_ID=" /etc/telegram-notify.conf 2>/dev/null | cut -d= -f2- | tr -d '"')
 
 SESSION_DIR="/var/lib/claude-pending"
 SESSION_FILE="$SESSION_DIR/session.json"
@@ -18,8 +18,8 @@ ANSWER_FILE="/var/run/telegram-bot-answer"
 QUESTION_FILE="/var/run/telegram-bot-question"
 LOG="/var/log/claude-maintenance/telegram-ask.log"
 
-# Kurzes initiales Warten (10 Minuten) für schnelle Antworten
-INITIAL_WAIT=600
+# Kurzes initiales Warten (2 Minuten) für schnelle Antworten
+INITIAL_WAIT=120
 # Session-Timeout (24 Stunden)
 SESSION_TIMEOUT=86400
 

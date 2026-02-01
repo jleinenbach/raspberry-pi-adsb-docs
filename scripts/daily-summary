@@ -109,7 +109,7 @@ fi
 
 # Drohnen Statistiken
 if systemctl is-active dragonsync &>/dev/null; then
-    DRONES_24H=$(sudo journalctl -u dragonsync --since "24 hours ago" --no-pager 2>/dev/null | grep -oP 'mac.*?[0-9a-f:]{17}' | sort -u | wc -l 2>/dev/null || echo "0")
+    DRONES_24H=$(sudo journalctl -u dragonsync --since "24 hours ago" --no-pager 2>/dev/null | grep -oP 'mac.*?[0-9a-f:]{17}' | sort -u | wc -l 2>/dev/null)
 else
     DRONES_24H=0
 fi

@@ -251,6 +251,21 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - Fix 1: --data-urlencode statt -d für korrektes URL-Encoding
   - Fix 2: parse_mode=MarkdownV2 mit Escaping aller Sonderzeichen (_ * [ ] ( ) ~ \` > # + - = | { } . \!)
   - Referenz: https://core.telegram.org/bots/api#markdownv2-style
+- **Fix: Session-Dialog-System komplett überarbeitet (2026-02-01)**
+  - **Problem 1 - Sekretär ohne Kontext:** Antwort "nichts" wurde als "Leerlauf" interpretiert statt als valide Antwort
+    - Root Cause: ORIGINAL_QUESTION wurde nicht in Sekretär-Prompt übergeben
+    - Fix: Kontext (Frage + Antwort) zusammen an Sekretär, explizites Beispiel im Prompt
+  - **Problem 2 - Kein /frage Befehl:** User konnte offene Frage nicht anzeigen ("❓ Unbekannt")
+    - Fix: /frage Befehl implementiert (zeigt Frage, Erstellzeit, Restzeit)
+    - Auch in /help aufgenommen für Session-Status
+  - **Problem 3 - Session-Response-Verzögerung:** Antwort wurde erst am nächsten Tag verarbeitet (claude-respond läuft 1x täglich)
+    - Fix: Bot triggert claude-respond.service sofort bei User-Antwort
+    - INITIAL_WAIT: 10min → 2min (Quick-Response-Window)
+  - **Problem 4 - Irreführender Hinweistext:** "/frage für Rückfragen" (falsch, /frage zeigt Frage)
+    - Fix: "Nutze /frage um die Frage erneut anzuzeigen"
+  - **Problem 5 - Service-Timeout-Inkonsistenz:** Session sagt 24h Zeit, Service bricht nach 10min ab
+    - Status: Service TimeoutSec bereits auf 30min erhöht (2026-02-01)
+  - **Bug-Fix: Einsame "0" nach Drohnen-Stats (2026-02-01):** `|| echo "0"` in daily-summary entfernt (wc -l gibt immer Zahl zurück)
 - **RTL-SDR Blog Library v1.3.6 installiert:** Behebt "[R82XX] PLL not locked" Problem mit R828D-Tuner (2026-01-29)
   - Alte Debian librtlsdr (0.6.0-4 aus 2012) durch aktuelle RTL-SDR Blog Version ersetzt
   - Kompiliert und installiert nach `/usr/local/lib/` (überschreibt System-Paket)
@@ -907,6 +922,10 @@ cd /home/pi/docs/scripts
 | **Exit Code 209** | **systemd STDOUT-Setup failed (Log-Verzeichnis fehlt)** |
 | **Watchdog "activating" Status** | **"activating" = normaler Übergangszustand (0-10s), NICHT sofort reparieren!** |
 | **ldconfig nach Library-Install** | **Nach Installation in /usr/local/lib immer `ldconfig` ausführen!** |
+| **Session-Dialog ohne Kontext** | **Sekretär braucht FRAGE + ANTWORT! "nichts" ohne Kontext = "Leerlauf"** |
+| **Session-Response-Verzögerung** | **Bot muss claude-respond triggern bei User-Antwort (nicht nur Timer 1x täglich!)** |
+| **INITIAL_WAIT vs. SESSION_TIMEOUT** | **10min Quick-Response zu lang! 2min reicht, Session bleibt 24h offen** |
+| **Service TimeoutSec vs. Session** | **Session sagt 24h Zeit, aber Service MUSS länger als INITIAL_WAIT laufen!** |
 
 ### Security Best Practices
 | Pattern | Warum |
