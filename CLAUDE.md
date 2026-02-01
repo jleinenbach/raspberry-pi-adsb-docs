@@ -104,7 +104,7 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
 ## Pending Recommendations
 | Source | Recommendation | Risk |
 |--------|----------------|------|
-| - | *Keine offenen Empfehlungen* | - |
+| AtomS3R | Langzeit-Test PSRAM-Firmware (>10h Uptime erforderlich) | Niedrig - Kurztest erfolgreich (11min stabil) |
 
 ---
 
