@@ -104,7 +104,9 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
 ## Pending Recommendations
 | Source | Recommendation | Risk |
 |--------|----------------|------|
-| - | Keine offenen Punkte | - |
+| AtomS3R | USB-Verbindung KRITISCH instabil (2015+ Events/24h seit 01.02. 07:35) - Neues High-End USB-Kabel bestellen (Anker PowerLine III USB-C to USB-A 3.2) | Hoch - verhindert Full-Firmware Flash |
+| AtomS3R | Full Firmware (BLE+WiFi) nicht flashbar wegen USB-Instabilität - nur minimale Firmware (BLE only, 616 KB) läuft | Mittel - WiFi NAN/Beacon Remote ID fehlt |
+| Watchdogs | Temporär deaktiviert (feeder-watchdog.timer, wartungs-watchdog.timer) zum Testen ob USB-Resets verursacht - nach USB-Fix wieder aktivieren | Mittel - kein automatischer Service-Restart |
 
 ---
 
@@ -185,6 +187,15 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
   - **Command-Lock:** Pro-Befehl Lock verhindert Doppel-Verarbeitung von /status, /stats, /log, /wartung (3 Sekunden)
   - **Array-basierte Update-Verarbeitung:** Ersetzt pipe-while (Subshell-Problem) durch mapfile+for (Haupt-Shell)
   - **Problem gelöst:** Mehrfach-Ausgaben bei schnellen wiederholten Befehlen
+- **AtomS3R Firmware-Fix: USB CDC Konfiguration (2026-02-01):**
+  - **Problem:** Serial.println() funktionierte nicht - ARDUINO_USB_CDC_ON_BOOT=1 fehlte!
+  - **Lösung:** Korrekte platformio.ini für M5Stack AtomS3/AtomS3R erstellt
+  - **USB CDC Flags:** ARDUINO_USB_CDC_ON_BOOT=1 + ARDUINO_USB_MODE=1 (essentiell!)
+  - **PSRAM Config:** qio_opi für 8MB Octal PSRAM (nicht qio_qspi!)
+  - **Minimale Firmware:** 616 KB (nur BLE Remote ID, kein WiFi) erfolgreich geflasht
+  - **Full Firmware:** 1.1 MB (BLE+WiFi) nicht flashbar wegen USB-Instabilität (2015+ USB-Events/24h)
+  - **Status:** ✅ BLE Remote ID funktional, ⏳ WiFi Remote ID nicht verfügbar bis USB-Kabel gewechselt
+  - **Watchdogs:** Temporär deaktiviert zum Testen ob USB-Resets verursacht werden
 - **FFTW Wisdom:** `/etc/fftw/wisdomf` generiert (460B, NEON-optimiert), aber ogn-rf nutzt es nicht (kein import/export_wisdom im Code, Test bestätigt) (2026-01-29)
 - **RTL-SDR Treiber-Validierung:** V4-spezifischer R828D-Tuner korrekt erkannt, keine generischen Fallback-Treiber (2026-01-29)
 - **Spannungsüberwachung:** USB-Spannungsprüfung (`vcgencmd get_throttled`) in /status, Wartung und daily-summary integriert - Erkennt Netzteil-Probleme (0x0=OK, 0x50000=Warnung, 0x50005=Kritisch) (2026-01-29)
@@ -1012,6 +1023,15 @@ cd /home/pi/docs/scripts
 | **Board-Definition wichtig** | **m5stack-atoms3 (M5Stack) ≠ seeed_xiao_esp32s3 (Seeed), unterschiedliche Pin-Mappings** |
 | **PSRAM Build-Flags** | **`board_build.arduino.memory_type = qio_opi` + `-DBOARD_HAS_PSRAM -mfix-esp32-psram-cache-issue`** |
 | **PlatformIO für ESP32** | **PlatformIO besser als Arduino IDE für Board-spezifische Builds (automatische Toolchain)** |
+| **ARDUINO_USB_CDC_ON_BOOT=1** | **KRITISCH für M5Stack AtomS3/AtomS3R! Ohne dieses Flag funktioniert Serial.println() NICHT** |
+| **USB CDC vs UART** | **AtomS3R hat KEINEN externen UART-Chip! USB CDC ist die EINZIGE Option für Serial** |
+| **ARDUINO_USB_MODE=1** | **Hardware CDC + JTAG (nicht Software CDC) - essentiell für USB-Serial-Kommunikation** |
+| **AtomS3 vs AtomS3R Board** | **AtomS3R nutzt `m5stack-atoms3` Board (kein separates atoms3r in PlatformIO)** |
+| **Firmware-Größe vs USB-Stabilität** | **Bei USB-Instabilität: Große Firmware (>1MB) schlägt fehl, kleine (<700KB) funktioniert** |
+| **ESP32 Firmware-Struktur** | **Firmware KANN NICHT in Chunks geflasht werden - Bootloader+Partitions+App müssen als Ganzes** |
+| **.bin für falsches Board** | **Pre-compiled .bin für XIAO funktioniert nicht auf AtomS3R → "Invalid image block"** |
+| **esptool --no-stub Mode** | **Bei USB-Instabilität langsamer aber manchmal stabiler (kein Stub-Loader)** |
+| **Watchdogs können USB-Resets verursachen** | **feeder-watchdog prüft /dev/ttyACM0 → kann zu USB-Reconnects führen** |
 | **ESP32 BLE Error-Spam** | **BLE Stack sendet Error-Messages über Serial trotz `esp_log_level_set()`! Nutze `esp_log_level_set("*", ESP_LOG_NONE)` für ALLE Logs** |
 | **ESP32 Log-System dual** | **ESP32 hat Console-Log (Monitor) UND Serial-Log! `esp_log_level_set()` unterdrückt nur Console, nicht Serial!** |
 | **Serial.flush() essentiell** | **`Serial.println()` ist NICHT atomar! Bei schnellen Writes können Messages vermischt werden → Immer `Serial.flush()` danach** |
