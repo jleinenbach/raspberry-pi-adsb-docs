@@ -182,3 +182,14 @@ Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
 | Path-Validierung | Prüfe auf `..` und absolute Pfade bei Config-Einträgen |
 | Atomare Dateiops | `flock` oder `(umask 077 && touch file)` |
 | Keine Secrets in Logs | Token/Passwörter nie in Fehlermeldungen |
+
+### NTP & Zeitsynchronisation (2026-02-03)
+| Erkenntnis | Lösung |
+|------------|--------|
+| **chronyd lauscht nur auf localhost** | **`allow 192.168.1.0/24` + `local stratum 1` in chrony.conf hinzufügen** |
+| **NTP-Server nicht im Netzwerk erreichbar** | **Port 123 muss auf 0.0.0.0 lauschen, nicht nur 127.0.0.1** |
+| **Watchdog activating ohne Timeout** | **Grace-Period 120s implementieren - danach eingreifen falls hängt** |
+| **activating-Marker braucht Timestamp** | **echo $now > marker statt touch - ermöglicht Zeitberechnung** |
+| **Stratum 1 Server im LAN** | **GPS PPS macht Pi zu primärer Zeitquelle - besser als öffentliche NTP-Server** |
+| **NTP vs NTS** | **NTS = Network Time Security, verschlüsselte NTP-Verbindung (PTB unterstützt)** |
+| **chronyd cmdallow** | **`cmdallow 127.0.0.1` erlaubt `chronyc clients` Monitoring** |

@@ -907,3 +907,112 @@ REF_SOURCE=$(echo "$CHRONY_STATS" | awk '/Reference ID/ {print $4}')
 - ✅ **Standard deviation: 641 nanoseconds** (sub-microsecond precision)
 - ✅ PTB Stratum-1 servers providing sanity checking
 - 🎯 **MLAT timestamp accuracy now optimal** (<1μs vs ~100-200μs NTP-only)
+
+---
+
+## NTP-Server für lokales Netzwerk (2026-02-03)
+
+Der Raspberry Pi dient als **Stratum 1 NTP-Server** für alle Geräte im Netzwerk.
+
+### Konfiguration
+
+**In `/etc/chrony/chrony.conf` (bereits konfiguriert):**
+
+```ini
+# NTP Server Konfiguration
+allow 192.168.1.0/24          # Erlaube Zugriff aus lokalem Netz
+local stratum 1                # Stratum 1 Server (GPS PPS!)
+clientloglimit 1000000         # Client-Logging
+cmdallow 127.0.0.1            # Monitoring erlauben
+```
+
+### Eigenschaften
+
+| Eigenschaft | Wert |
+|-------------|------|
+| **IP-Adresse** | 192.168.1.135 |
+| **Port** | 123 (UDP) |
+| **Stratum** | 1 (GPS PPS + PTB Atomuhren) |
+| **Genauigkeit** | ±1-2 Mikrosekunden |
+| **Zeitquelle** | GPS PPS (primär) + PTB (Backup) |
+| **Verfügbarkeit** | 24/7 |
+| **Sicherheit** | NTS-verschlüsselt (Upstream) |
+
+### Verwendung in anderen Geräten
+
+#### Windows
+```
+1. Systemsteuerung → Datum/Uhrzeit
+2. Internetzeit → Einstellungen ändern
+3. Server: 192.168.1.135
+4. Jetzt aktualisieren
+```
+
+#### Linux/Unix
+```bash
+# In /etc/chrony/chrony.conf oder /etc/ntp.conf:
+server 192.168.1.135 iburst prefer
+```
+
+#### Router/NAS (OPNsense, Synology, etc.)
+```
+Zeitserver: 192.168.1.135
+```
+
+#### Home Assistant
+```yaml
+# In configuration.yaml:
+time:
+  - platform: ntp
+    servers:
+      - 192.168.1.135
+```
+
+#### Docker Container
+```bash
+# Oder in /etc/docker/daemon.json:
+{
+  "time-servers": ["192.168.1.135"]
+}
+```
+
+### Test von anderem Gerät
+
+```bash
+# Teste NTP-Server (von anderem Computer im Netzwerk):
+ntpdate -q 192.168.1.135
+
+# Oder mit chronyc:
+chronyc -h 192.168.1.135 tracking
+```
+
+### Status prüfen
+
+```bash
+# NTP-Server Status
+chronyc tracking
+chronyc sources -v
+
+# Port prüfen (sollte auf 0.0.0.0:123 lauschen)
+sudo ss -ulnp | grep ":123"
+
+# Verbundene Clients (benötigt cmdallow)
+chronyc clients
+```
+
+### Monitoring
+
+- **Watchdog:** chronyd wird von feeder-watchdog überwacht
+- **Grace-Period:** 120 Sekunden beim Boot (activating-Status)
+- **Restart bei Problemen:** Automatisch durch Watchdog
+
+### Warum dieser NTP-Server empfohlen ist
+
+1. ✅ **Stratum 1** - Primäre Zeitquelle (GPS PPS)
+2. ✅ **Mikrosekunden-Genauigkeit** - 1000x besser als öffentliche Server
+3. ✅ **Lokal** - Keine Internet-Latenz, immer verfügbar
+4. ✅ **PTB-Backup** - Deutsche Atomuhr als Fallback
+5. ✅ **NTS-verschlüsselt** - Moderne Sicherheit (Upstream)
+6. ✅ **Kostenlos** - Keine Abhängigkeit von externen Diensten
+7. ✅ **MLAT-optimal** - Extrem wichtig für ADS-B MLAT-Berechnungen
+

@@ -376,7 +376,7 @@ ODER: ESPHome Proxy (BLE) → ha-opendroneid → Home Assistant (MQTT)
 
 ---
 
-## Überwachte Services (27 + wifi-presence-detector)
+## Überwachte Services (28)
 *Bot, Watchdog, Wartung müssen synchron sein und nach Kategorien trennen!*
 
 ### Core ADS-B (1)
@@ -402,8 +402,9 @@ dragonsync, atoms3-proxy
 ### Alert Services (3)
 aircraft-alert-notifier, ogn-balloon-notifier, drone-alert-notifier
 
-### GPS Services (2)
-ntripcaster, ntrip-proxy
+### GPS Services (3)
+ntripcaster, ntrip-proxy, chronyd
+
 
 **Sonderfall:** `wifi-presence-detector` wird separat überwacht (nur wenn atoms3-proxy läuft)
 
