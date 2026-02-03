@@ -318,6 +318,40 @@ vcgencmd get_throttled
 - Defektes USB-C-Kabel
 - RTL-SDR an USB 2.0 Port (sollte USB 3.0 sein)
 
+### Timer-Service Health Check (2026-02-03)
+**Problem:** Timer-basierte Services (systemd oneshot mit Timer) können "leise crashen":
+- Exit Code 0 (erfolgreich) trotz Fehlern im Journal
+- `systemctl --failed` zeigt NICHTS an
+- `journalctl -p err` zeigt NICHTS an (Permission denied ist kein error-level)
+- Service läuft alle X Minuten erneut und crasht jedes Mal
+
+**Beispiel:** do-queue-worker crashte alle 2 Minuten mit "Permission denied", aber war unsichtbar für normale Monitoring-Tools.
+
+**Lösung:** `check_timer_services()` in `claude-respond-to-reports`
+```bash
+# Scannt ALLE Timer-basierten Services auf Problem-Indikatoren:
+# - "permission denied"
+# - "error.*failed"
+# - "cannot"
+# - "unable to"
+# - "not found"
+
+# Integration in täglicher Wartung (07:00)
+# Ausgabe im REPORT_DATA vor "CORE SERVICES STATUS"
+```
+
+**Was wird geprüft:**
+1. Alle aktiven systemd Timers finden (`systemctl list-timers`)
+2. Für jeden Timer den zugehörigen Service finden (`.timer` → `.service`)
+3. Letzte 50 Journal-Einträge scannen (unabhängig vom Log-Level)
+4. Problem-Indikatoren suchen (auch bei Exit 0)
+5. Exit-Code und Timestamp des letzten Laufs anzeigen
+
+**Testergebnis (2026-02-03):**
+- ✅ Hätte do-queue-worker Permission denied erkannt
+- ✅ Jetzt integriert in tägliche Wartung
+- ✅ Erkennt "leise crashende" Services zuverlässig
+
 ---
 
 

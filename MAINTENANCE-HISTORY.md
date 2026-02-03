@@ -87,6 +87,71 @@ Dokumentation von abgelehnten und ausstehenden Wartungsempfehlungen.
 
 ---
 
+### Timer-Service Health Check - "Leise crashende" Services
+
+**Problem:** Timer-basierte Services können unsichtbar crashen
+- do-queue-worker crashte alle 2 Minuten mit "Permission denied"
+- Exit Code 0 (erfolgreich) → `systemctl --failed` zeigte NICHTS
+- Log-Level nicht "error" → `journalctl -p err` zeigte NICHTS
+- User entdeckte nur durch Zufall: "Das gefällt mir gar nicht - ich habe als einziger User vorhin keinen /do Worker gestartet!"
+
+**Root Cause:**
+```
+/run/do-queue-worker.lock: Permission denied
+flock: 200: Bad file descriptor
+systemd[1]: do-queue-worker.service: Deactivated successfully.  ← Exit 0!
+systemd[1]: Finished do-queue-worker.service - Process /do command queue.
+```
+
+**Warum unsichtbar?**
+1. Service Type=oneshot → beendet sich nach Ausführung (normal)
+2. Exit Code 0 trotz Fehler → systemd sieht "erfolgreich"
+3. "Permission denied" ist stdout, kein error-level log
+4. systemctl --failed: Leer (Service nicht "failed")
+5. journalctl -p err: Leer (keine error-level logs)
+
+**Fix 1: Permission Problem behoben**
+- Hinzugefügt: `RuntimeDirectory=do-queue-worker` in Service-Unit
+- Hinzugefügt: `RuntimeDirectoryPreserve=yes`
+- Pfade geändert:
+  - `/run/do-queue-worker.lock` → `/run/do-queue-worker/worker.lock`
+  - `/run/do-queue.lock` → `/run/do-queue-worker/queue.lock`
+  - `/var/log/do-queue-worker.log` → `/var/lib/claude-pending/do-queue-worker.log`
+
+**Fix 2: Generelles Monitoring implementiert**
+- Neue Funktion: `check_timer_services()` in `/usr/local/sbin/claude-respond-to-reports`
+- Scannt ALLE Timer-basierten Services auf Problem-Indikatoren
+- Prüft Journal unabhängig vom Log-Level:
+  - "permission denied"
+  - "error.*failed"
+  - "cannot"
+  - "unable to"
+  - "not found"
+- Integration in tägliche Wartung (07:00)
+- Ausgabe im REPORT_DATA vor "CORE SERVICES STATUS"
+
+**Test:**
+```bash
+# Simulation: Hätte do-queue-worker erkannt?
+$ bash test-timer-check-old.sh
+✅ Health Check HÄTTE es gefunden:
+Feb 03 22:37:45 adsb-feeder do-queue-worker[695541]: /usr/local/sbin/do-queue-worker: line 37: /run/do-queue-worker.lock: Permission denied
+
+# Aktuell (nach Fix):
+$ bash test-timer-check-function.sh
+Keine Probleme (alle timer-basierten Services laufen sauber)
+```
+
+**Learnings:**
+- Exit Code 0 ≠ "keine Fehler" bei oneshot Services
+- Log-Level filtering kann echte Probleme verstecken
+- Timer-basierte Services brauchen spezielle Überwachung
+- Normale Monitoring-Tools (systemctl --failed, journalctl -p err) reichen NICHT
+
+**Status:** ✅ Resolved - Permission-Problem behoben + generelles Monitoring aktiv
+
+---
+
 ### tar1090 HTTP 502 Error - Unbemerkt vom Watchdog
 
 **Problem:** User meldete "Der liefert gerade Fehler 502 - und das erscheint weder unter /status noch hat das in Watchdog bemerkt!"
