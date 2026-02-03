@@ -3,7 +3,7 @@
 **Raspberry Pi 4 Model B** | Debian 12 (bookworm)
 **Standort:** 49.86625, 10.83948 | 283m
 
-> **Dokumentation:** `~/docs/FEEDS.md` | `~/docs/MONITORING.md` | `~/docs/OGN-SETUP.md` | `~/docs/HOME-ASSISTANT.md` | `~/docs/DRAGONSYNC.md` | `~/docs/ATOMS3-FIRMWARE.md` | `~/docs/PRESENCE-DETECTION.md` | `~/docs/GPS-NTRIP-PROXY.md`
+> **Dokumentation:** `~/docs/FEEDS.md` | `~/docs/MONITORING.md` | `~/docs/OGN-SETUP.md` | `~/docs/HOME-ASSISTANT.md` | `~/docs/DRAGONSYNC.md` | `~/docs/DRAGONSYNC-API.md` | `~/docs/ATOMS3-FIRMWARE.md` | `~/docs/PRESENCE-DETECTION.md` | `~/docs/GPS-NTRIP-PROXY.md` | `~/docs/GPS-HOME-ASSISTANT.md`
 > 
 > **Historie:** `~/docs/CHANGELOG.md` | `~/docs/MAINTENANCE-HISTORY.md` | `~/docs/LESSONS-LEARNED.md`
 
@@ -51,7 +51,7 @@ sudo grep -i "warning" /var/log/rkhunter.log 2>/dev/null | tail -10
 sudo cat /var/log/claude-maintenance/response-$(date +%Y-%m-%d).log 2>/dev/null | tail -60
 sudo tail -20 /var/log/feeder-watchdog.log 2>/dev/null
 
-# Services (21 Services nach Kategorie)
+# Services (29 Services nach Kategorie)
 # Core ADS-B
 systemctl is-active readsb
 # Upload Feeds (9)
@@ -62,8 +62,12 @@ systemctl is-active mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat
 systemctl is-active tar1090 graphs1090 adsbexchange-stats
 # OGN Services (3)
 systemctl is-active ogn-rf-procserv ogn-decode-procserv ogn2dump1090
-# DragonSync
-systemctl is-active dragonsync
+# DragonSync (2)
+systemctl is-active dragonsync atoms3-proxy
+# Alert Services (3)
+systemctl is-active aircraft-alert-notifier ogn-balloon-notifier drone-alert-notifier
+# GPS Services (4)
+systemctl is-active ntripcaster ntrip-proxy chronyd gps-mqtt-publisher
 # Hardware
 lsusb | grep -i RTL
 
@@ -316,6 +320,176 @@ vcgencmd get_throttled
 
 ---
 
+
+---
+
+## 🔄 Koordination zwischen Reparatur-Mechanismen
+
+### Problem: Race Conditions zwischen automatischen Systemen
+
+**Vorher:** Drei unabhängige Reparatur-Mechanismen ohne Koordination:
+1. **systemd Auto-Restart** (sofort bei Crash)
+2. **feeder-watchdog** (alle 5min, exponentielles Backoff)
+3. **claude-respond-to-reports** (täglich 07:00 + Eskalationen)
+
+**Folge:** Mechanismen störten sich gegenseitig:
+- Watchdog repariert → Claude startet parallel neu
+- Claude baut Services um → Watchdog mischt sich ein
+- Boot: Watchdog startet zu früh → False Positives
+
+### Lösung: Intelligente Koordination (2026-02-03)
+
+#### 1. Boot-Grace-Period im Watchdog
+
+**Problem:** Watchdog läuft 2min nach Boot, aber Services brauchen länger:
+- ogn-rf: 10-15min FFTW Benchmarking
+- Dependencies: chronyd, gpsd, Netzwerk brauchen Zeit
+
+**Implementierung:**
+```bash
+BOOT_GRACE_MINUTES=20  # 20 Minuten nach Boot keine Reparaturen
+
+is_boot_grace_period() {
+    local uptime_seconds=$(awk '{print int($1)}' /proc/uptime)
+    local grace_seconds=$((BOOT_GRACE_MINUTES * 60))
+    
+    if [ "$uptime_seconds" -lt "$grace_seconds" ]; then
+        log "BOOT GRACE: System hochgefahren vor $((uptime_seconds / 60))min"
+        return 0  # In Grace Period
+    fi
+    return 1
+}
+```
+
+**Verhalten:**
+- Timer: `OnBootSec=2min` (Watchdog startet bei 2min)
+- **Erste 20min:** Watchdog läuft, prüft NUR, macht KEINE Reparaturen
+- **Nach 20min:** Normale Überwachung startet
+
+**Effekt:** ✅ Keine False Positives beim Boot mehr
+
+#### 2. wait_for_quiet() - Zentrale Koordination
+
+**Problem:** Claude-Wartung startete ohne auf andere Aktivitäten zu warten
+
+**Implementierung:** In `/usr/local/sbin/claude-respond-to-reports` (Zeile 43-167)
+
+**Prüft 9 Aktivitäts-Indikatoren:**
+
+| Check | Was wird erkannt | Wartezeit |
+|-------|------------------|-----------|
+| 1. Services activating | `systemctl list-units --state=activating` | Bis active |
+| 2. Watchdog kürzlich aktiv | Log-Check <2min | 2min |
+| **2b. Watchdog-Eskalationen** | `/var/run/feeder-watchdog/*.given_up` + aktiv <30s | 30s |
+| 3. Systemd-Restarts | ExecMainStartTimestamp <30s | 30s |
+| 4. Andere Claude-Wartung | Lock-File `/var/run/claude-respond.lock` | Bis fertig |
+| 5. /do Queue Worker | `pgrep do-queue-worker` | Bis fertig |
+| 6. Interaktive Claude Session | `pgrep "claude -p"` | Bis fertig |
+| 7. Config-Änderungen | `/etc/systemd/`, `/usr/local/sbin/` mtime <10min | 10min |
+| 8. systemd daemon-reload | Unit-File-Warnings | Bis reload |
+
+**Verhalten:**
+- **Max Wartezeit:** 10 Minuten
+- **Quiet-Counter:** 2 aufeinanderfolgende "ruhige" Checks (je 15s)
+- **User-Info:** Nach 5min Telegram-Benachrichtigung
+- **Timeout:** Nach 10min Start trotzdem (mit Warnung)
+
+**Besonderheit Watchdog-Eskalationen:**
+```bash
+if [ "$given_up_services" -gt 0 ]; then
+    # Informiere User warum Wartung läuft
+    telegram-notify "🔧 Wartung wegen Watchdog-Eskalation: $services"
+    
+    # Prüfe ob Watchdog GERADE aktiv ist
+    if [ "$watchdog_age" -lt 30 ]; then
+        issues+=("Watchdog repariert JETZT")
+        # Claude wartet bis Watchdog fertig ist
+    fi
+fi
+```
+
+#### 3. Koordinations-Matrix
+
+| Situation | systemd | Watchdog | Claude | Ergebnis |
+|-----------|---------|----------|--------|----------|
+| **Boot <20min** | 🟢 Normal | ⏸️ Überspringt | 🟢 Normal | ✅ Keine False Positives |
+| **Boot >20min** | 🟢 Normal | 🟢 Überwacht | 🟢 Normal | ✅ Alle aktiv |
+| **Service crashed** | 🔧 Restart (sofort) | 🟢 Wartet | 🟢 Wartet | ✅ systemd zuerst |
+| **systemd failed** | ⏸️ Gibt auf | 🔧 Repair (5min) | 🟢 Wartet | ✅ Watchdog versucht |
+| **Watchdog eskaliert** | ⏸️ - | 🚩 Aufgegeben | 🔧 Übernimmt | ✅ Claude repariert |
+| **Watchdog aktiv <30s** | 🟢 Normal | 🔧 Repariert | ⏳ **Wartet** | ✅ Keine Doppel-Reparatur |
+| **Interaktive Session** | 🟢 Normal | 🟢 Überwacht | ⏳ **Wartet** | ✅ Keine Störung |
+| **Alle ruhig** | 🟢 Normal | 🟢 Überwacht | 🟢 Arbeitet | ✅ Koordiniert |
+
+### Drei-Ebenen-Absicherung
+
+```
+┌─────────────────────────────────────────┐
+│ Ebene 1: systemd Auto-Restart           │
+│ - Restart=always: Sofort bei Crash      │
+│ - Restart=on-failure: Bei Exit ≠ 0      │
+│ - Reaktionszeit: Sekunden                │
+└─────────────────────────────────────────┘
+              ↓ (falls fehlschlägt)
+┌─────────────────────────────────────────┐
+│ Ebene 2: feeder-watchdog (alle 5min)    │
+│ - Boot-Grace: 20min nach Start          │
+│ - Exponentielles Backoff: 5→10→20→40min │
+│ - Eskalation nach 5h → Claude            │
+│ - Telegram-Benachrichtigungen            │
+└─────────────────────────────────────────┘
+              ↓ (nach 5h Versuchen)
+┌─────────────────────────────────────────┐
+│ Ebene 3: Claude-Wartung (07:00)         │
+│ - wait_for_quiet(): Prüft 9 Indikatoren │
+│ - Wartet auf Ruhe (max 10min)           │
+│ - Intelligente Reparatur + Analyse       │
+└─────────────────────────────────────────┘
+```
+
+### Dateien
+
+| Datei | Funktion | Änderung |
+|-------|----------|----------|
+| `/usr/local/sbin/feeder-watchdog` | Watchdog mit Boot-Grace | `BOOT_GRACE_MINUTES=20`, `is_boot_grace_period()` |
+| `/usr/local/sbin/claude-respond-to-reports` | Claude mit wait_for_quiet | `wait_for_quiet()` (Zeile 43-167) |
+| `/var/run/feeder-watchdog/*.given_up` | Eskalations-Marker | Watchdog legt an, Claude prüft |
+| `/var/run/claude-watchdog-escalation-aware` | Eskalations-Info-Marker | Claude legt einmalig an |
+
+### Logs & Debugging
+
+```bash
+# Boot-Grace im Watchdog sehen
+sudo grep "BOOT GRACE" /var/log/feeder-watchdog.log
+
+# wait_for_quiet Aktivität
+sudo grep "wait_for_quiet\|Warte auf Ruhe" /var/log/claude-maintenance/response-*.log
+
+# Eskalationen prüfen
+ls /var/run/feeder-watchdog/*.given_up 2>/dev/null
+
+# Watchdog letzte Aktivität
+sudo tail -50 /var/log/feeder-watchdog.log | grep -E "VERSUCH|OK|FEHLER"
+```
+
+### Test-Befehle
+
+```bash
+# Boot-Grace testen (simuliere kurze Uptime)
+awk '{print int($1/60)}' /proc/uptime  # Aktuelle Uptime in Minuten
+
+# Eskalation simulieren
+sudo touch /var/run/feeder-watchdog/test-service.given_up
+# Claude-Wartung würde erkennen und warten
+
+# Cleanup
+sudo rm /var/run/feeder-watchdog/test-service.given_up
+```
+
+**Status:** ✅ Alle drei Ebenen koordiniert seit 2026-02-03
+
+
+
 ## Drei getrennte Luftverkehrs-Datenströme
 
 **Das System empfängt drei verschiedene Arten von Luftfahrzeugen:**
@@ -376,7 +550,7 @@ ODER: ESPHome Proxy (BLE) → ha-opendroneid → Home Assistant (MQTT)
 
 ---
 
-## Überwachte Services (28)
+## Überwachte Services (29)
 *Bot, Watchdog, Wartung müssen synchron sein und nach Kategorien trennen!*
 
 ### Core ADS-B (1)
@@ -402,8 +576,8 @@ dragonsync, atoms3-proxy
 ### Alert Services (3)
 aircraft-alert-notifier, ogn-balloon-notifier, drone-alert-notifier
 
-### GPS Services (3)
-ntripcaster, ntrip-proxy, chronyd
+### GPS Services (4)
+ntripcaster, ntrip-proxy, chronyd, gps-mqtt-publisher
 
 
 **Sonderfall:** `wifi-presence-detector` wird separat überwacht (nur wenn atoms3-proxy läuft)

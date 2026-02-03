@@ -177,3 +177,210 @@ curl http://adsb-feeder.internal/tar1090/
 
 ---
 
+
+### DragonSync - WarDragon S3R System Stats deaktiviert (2026-02-03)
+
+**Problem:** Home Assistant zeigte 11 nutzlose Sensoren mit 0-Werten:
+- Zynq Temp: 0°C
+- Pluto Temp: 0°C
+- Ground Speed: 0 m/s
+- CPU/Memory/Disk: alle 0
+
+**Root Cause:**
+- DragonSync ist Teil des **WarDragon S3R** Projekts (mobiles SDR-Kit)
+- System Stats sind für mobile Kits mit PlutoSDR/Zynq FPGA Hardware
+- **Wir haben nur den Drohnen-Teil** (AtomS3 + DragonSync Gateway)
+
+**Was ist WarDragon S3R?**
+- Mobiles Software Defined Radio für Fahrzeuge (wardriving)
+- PlutoSDR (70MHz-6GHz) + Zynq FPGA
+- GPS-Tracking während Fahrt
+- DragonSync ist NUR die Gateway-Software
+
+**Was wir haben:**
+- ✅ DragonSync (Drohnen-Gateway-Software)
+- ✅ AtomS3 (BLE Remote ID Scanner)
+- ❌ KEIN PlutoSDR/Zynq
+- ❌ KEINE mobile Hardware
+
+**Fix:**
+1. `/home/pi/DragonSync/sinks/mqtt_sink.py` - `publish_system()` deaktiviert (early return)
+2. Backup: `mqtt_sink.py.backup-20260203`
+3. MQTT Discovery Messages gelöscht (11 Sensoren + Device Tracker)
+4. DragonSync neu gestartet
+
+**Resultat:**
+- ✅ DragonSync funktioniert normal (Drohnen-Erkennung)
+- ✅ Keine 0-Wert-Sensoren mehr in HA
+- ✅ Dokumentiert für künftige Updates
+
+**Update-Warnung:**
+- Bei `git pull` von DragonSync: Patch prüfen!
+- Falls überschrieben: Backup restaurieren oder erneut patchen
+- Siehe: `~/docs/DRAGONSYNC.md` → "WarDragon S3R System Stats"
+
+**Status:** ✅ Resolved - Nur Drohnen-Erkennung aktiv, keine nutzlosen S3R-Stats
+
+---
+
+### Claude-Wartung Race Conditions - Koordination implementiert (2026-02-03)
+
+**Problem:** Mehrere Reparatur-Mechanismen konnten sich gegenseitig stören:
+- Claude-Wartung (täglich 07:00) vs. Watchdog (alle 5min)
+- Claude-Wartung vs. interaktive Claude-Sessions
+- Claude-Wartung vs. /do Queue Worker
+- Keine Koordination zwischen verschiedenen System-Aktivitäten
+
+**User-Feedback:** "Die Claude-Wartung von Ebene 2 muss immer prüfen und ggf. abwarten, ob bereits Aktivitäten im System an diesem Problem arbeiten [...] man sollte sich nicht in die Quere kommen, was schon öfter passiert war!"
+
+**Root Cause:**
+- claude-respond-to-reports hatte nur Lock gegen sich selbst
+- Keine Prüfung auf laufende Watchdog-Reparaturen
+- Keine Erkennung von interaktiven Claude-Sessions
+- Keine Prüfung auf kürzliche Service-Änderungen
+
+**Fix: wait-for-quiet() Funktion**
+
+Implementiert in `/usr/local/sbin/claude-respond-to-reports` (nach Zeile 42, vor Hauptlogik)
+
+**Prüft 8 Aktivitäts-Indikatoren:**
+1. **Services im "activating" Status** - Jemand startet gerade Services
+2. **Watchdog-Aktivität** - Letzte 2 Minuten auf Reparaturen prüfen
+3. **Systemd-Restarts** - ExecMainStartTimestamp <30s
+4. **Andere Claude-respond Instanz** - Lock-File-Prüfung
+5. **do-queue-worker** - /do Befehl läuft
+6. **Interaktive Claude CLI Session** - `pgrep -f "claude -p"`
+7. **Kürzliche Config-Änderungen** - `/etc/systemd/system/` + `/usr/local/sbin/` mtime <10min
+8. **systemd daemon-reload pending** - Unit-File-Warnings
+
+**Verhalten:**
+- **Wartezeit:** Max 10 Minuten, Checks alle 15 Sekunden
+- **Quiet-Counter:** 2 aufeinanderfolgende "ruhige" Checks nötig
+- **Benachrichtigung:** Nach 5min wartet Telegram-Nachricht an User
+- **Timeout:** Nach 10min startet Wartung trotzdem (mit Warnung)
+- **Heartbeat:** Hält wartungs-watchdog während Wartezeit am Leben
+
+**Test-Resultat:**
+```
+⏳ System hat Aktivität:
+   - Claude CLI (PID 678356)           ✅ Erkannt!
+   - /do Worker läuft                  ✅ Erkannt!
+   - Config-Änderungen <10min (2)      ✅ Erkannt!
+```
+
+**Effekt:**
+- ✅ **Keine Race Conditions mehr** zwischen Reparatur-Mechanismen
+- ✅ **Interaktive Sessions werden respektiert** - Wartung wartet ab
+- ✅ **Watchdog kann in Ruhe arbeiten** - Keine doppelten Restarts
+- ✅ **User bekommt Feedback** wenn Wartung wartet
+- ✅ **Intelligenter Timeout** - Hängt nicht ewig
+
+**Backup:** `/usr/local/sbin/claude-respond-to-reports.backup-20260203-*`
+
+**Status:** ✅ Implemented - claude-respond-to-reports koordiniert sich jetzt mit allen System-Aktivitäten
+
+---
+
+### Watchdog Boot-Grace-Period & Eskalations-Koordination (2026-02-03)
+
+**Problem 1: Watchdog startet zu früh nach Boot**
+- Timer: `OnBootSec=2min` - Watchdog läuft 2 Minuten nach Systemstart
+- ogn-rf-procserv: Braucht 10-15 Minuten für FFTW Benchmarking
+- Andere Services: Dependencies noch nicht bereit, normale Startzeit >2min
+- **Folge:** False Positives, unnötige Restarts beim Systemstart
+
+**Problem 2: Watchdog und Claude-Wartung arbeiten gegeneinander**
+- Watchdog eskaliert nach 5h zu Claude (markiert Services als "given_up")
+- Claude-Wartung (07:00) startet ohne zu prüfen ob Watchdog gerade arbeitet
+- Watchdog repariert Service → Claude mischt sich parallel ein
+- **User-Feedback:** "Die Watchdogs rufen auch Claude zuhilfe, auch da muss eine Prüfung erfolgen"
+
+**Fix 1: Boot-Grace-Period im Watchdog**
+
+**Implementierung:** `/usr/local/sbin/feeder-watchdog`
+
+**Neue Funktion:**
+```bash
+BOOT_GRACE_MINUTES=20  # 20 Minuten nach Boot keine Reparaturen
+
+is_boot_grace_period() {
+    local uptime_seconds=$(awk '{print int($1)}' /proc/uptime)
+    local grace_seconds=$((BOOT_GRACE_MINUTES * 60))
+    
+    if [ "$uptime_seconds" -lt "$grace_seconds" ]; then
+        log "BOOT GRACE: System hochgefahren vor $((uptime_seconds / 60))min"
+        return 0  # In Grace Period
+    fi
+    return 1  # Grace Period vorbei
+}
+```
+
+**Verhalten:**
+- Watchdog-Timer startet weiterhin 2min nach Boot (`OnBootSec=2min`)
+- Watchdog prüft Uptime bei jedem Lauf (alle 5min)
+- **Erste 20 Minuten:** Watchdog loggt nur, macht KEINE Reparaturen
+- **Nach 20 Minuten:** Normaler Betrieb
+
+**Warum 20 Minuten?**
+- ogn-rf-procserv: 10-15min FFTW Benchmarking (längster Service)
+- ogn-decode-procserv: Auto-Restart alle 15s (stabilisiert sich in ~5min)
+- Dependencies: Netzwerk, chronyd, gpsd brauchen Zeit
+- Buffer: +5min Sicherheit
+
+**Fix 2: Watchdog-Eskalations-Awareness in Claude-Wartung**
+
+**Implementierung:** `/usr/local/sbin/claude-respond-to-reports` (in `wait_for_quiet()`)
+
+**Neue Checks:**
+```bash
+# 2b. Prüfe ob Watchdog-Eskalationen vorliegen
+local given_up_services=$(ls /var/run/feeder-watchdog/*.given_up | wc -l)
+if [ "$given_up_services" -gt 0 ]; then
+    # Informiere User warum Wartung läuft
+    log "📢 Watchdog-Eskalation: $given_up_services Service(s) aufgegeben"
+    telegram-notify "🔧 Wartung wegen Watchdog-Eskalation: $services"
+    
+    # Prüfe ob Watchdog GERADE aktiv ist (letzte 30s)
+    if [ "$watchdog_age" -lt 30 ]; then
+        issues+=("Watchdog repariert JETZT")
+        # → Claude wartet bis Watchdog fertig ist
+    fi
+fi
+```
+
+**Koordinations-Logik:**
+
+| Situation | Verhalten |
+|-----------|-----------|
+| Keine Eskalation | Claude macht normale Wartung |
+| Eskalation vorhanden, Watchdog ruhig | Claude kümmert sich um eskalierte Services |
+| Eskalation + Watchdog aktiv (letzte 30s) | **Claude wartet** bis Watchdog fertig ist |
+| Eskalation + Interaktive Session | **Claude wartet** bis Session fertig ist |
+
+**Effekt:**
+- ✅ **Kein frühes Eingreifen beim Boot** - Services haben Zeit zu starten
+- ✅ **Watchdog und Claude koordinieren sich** - Keine parallelen Reparaturen
+- ✅ **User wird informiert** warum Wartung läuft (normale Wartung vs. Eskalation)
+- ✅ **Intelligentes Warten** - Claude respektiert laufende Watchdog-Aktivitäten
+
+**Test-Resultate:**
+
+**Boot-Grace-Test:**
+```
+Uptime: 839 Minuten → Grace Period vorbei → Watchdog würde normal prüfen
+Uptime: <20 Minuten → In Grace Period → Watchdog überspringt Runde
+```
+
+**Eskalations-Test:**
+```
+given_up Service vorhanden → Erkannt ✅
+Watchdog-Log aktiv vor 15s → Claude wartet ✅
+```
+
+**Backup:**
+- `/usr/local/sbin/feeder-watchdog.backup-20260203-*`
+- `/usr/local/sbin/claude-respond-to-reports.backup-20260203-*`
+
+**Status:** ✅ Implemented - Boot-Grace + Eskalations-Koordination aktiv
+
+---

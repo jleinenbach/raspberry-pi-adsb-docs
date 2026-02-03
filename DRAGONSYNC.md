@@ -362,3 +362,163 @@ fpv_zmq_port = 4226
 - ✅ Große Events: Stabil auch bei vielen Drohnen
 - ✅ Puffer für Burst-Empfang
 - ✅ Zukunftssicher
+
+---
+
+## WarDragon S3R System Stats - DEAKTIVIERT
+
+**Änderung:** 2026-02-03  
+**Grund:** Dieses System ist KEIN mobiles WarDragon S3R SDR-Kit
+
+### Was ist WarDragon S3R?
+
+**WarDragon S3R** = Mobiles Software Defined Radio (SDR) System für Fahrzeuge
+
+```
+┌───────────────────────────────────────────────────────┐
+│  Komplettes WarDragon S3R Kit ($$$)                   │
+├───────────────────────────────────────────────────────┤
+│  Hardware:                                            │
+│  • Raspberry Pi 4 (Computer)                          │
+│  • ADALM PlutoSDR (SDR 70MHz-6GHz)                    │
+│  • Zynq FPGA (Signal-Prozessor im PlutoSDR)           │
+│  • GPS mit Tracking (Fahrzeug-Position)               │
+│  • Optional: AtomS3 für Remote ID                     │
+│                                                        │
+│  Anwendungen:                                         │
+│  • Wardriving (WiFi/Cellular Mapping)                 │
+│  • RF-Spektrum-Analyse (alle Frequenzen)              │
+│  • Drohnen-Erkennung (Remote ID)                      │
+│  • ISM-Band (433MHz, 868MHz IoT)                      │
+│  • 4G/5G Basisstationen-Tracking                      │
+└───────────────────────────────────────────────────────┘
+```
+
+### Was wir haben vs. WarDragon S3R
+
+| Komponente | WarDragon S3R | Unser System |
+|------------|---------------|--------------|
+| **PlutoSDR** | ✅ Ja (teures SDR-Modul) | ❌ Nein |
+| **Zynq FPGA** | ✅ Ja (im PlutoSDR) | ❌ Nein |
+| **GPS Tracking** | ✅ Ja (mobile Anwendung) | ✅ Ja (aber stationär!) |
+| **AtomS3** | ✅ Optional (Remote ID) | ✅ Ja (unser Hauptgerät) |
+| **DragonSync** | ✅ Ja (Gateway-Software) | ✅ Ja |
+| **Mobiler Einsatz** | ✅ Auto/Motorrad | ❌ Stationär |
+
+**Fazit:** Wir nutzen nur **DragonSync** (die Gateway-Software) für Drohnen-Erkennung. Die komplette WarDragon S3R Hardware fehlt.
+
+### WarDragon System Stats (die wir NICHT brauchen)
+
+DragonSync's MQTT-Code enthält "WarDragon System Stats" für mobile S3R-Kits:
+
+| Sensor | Zweck | Warum nutzlos für uns? |
+|--------|-------|------------------------|
+| **Zynq Temp** | FPGA-Temperatur im PlutoSDR | Kein PlutoSDR vorhanden |
+| **Pluto Temp** | SDR-Modul-Temperatur | Kein PlutoSDR vorhanden |
+| **Ground Speed** | Auto-Geschwindigkeit (GPS) | System ist stationär |
+| **Course** | Fahrtrichtung (GPS Track) | System ist stationär |
+| **CPU/Memory** | Pi-System-Stats | Könnte nützlich sein, aber... |
+| **Disk Usage** | Storage-Stats | ...wardragon_monitor.py läuft nicht |
+
+**Problem:** Diese Stats werden mit **0-Werten** an Home Assistant gesendet, weil:
+- PlutoSDR fehlt → Zynq/Pluto Temp = 0°C
+- System ist stationär → Ground Speed = 0 m/s
+- wardragon_monitor.py läuft nicht → CPU/Memory = 0
+
+### Lösung: System Stats deaktiviert
+
+**Datei:** `/home/pi/DragonSync/sinks/mqtt_sink.py`  
+**Methode:** `publish_system()` - early return eingefügt
+
+```python
+def publish_system(self, status_message: Dict[str, Any]) -> None:
+    """
+    DISABLED: WarDragon System Stats
+    Reason: This system is NOT a mobile WarDragon S3R with PlutoSDR!
+    We only use DragonSync for drone Remote ID detection (AtomS3).
+    """
+    return  # Early return - no system stats needed
+```
+
+**Backup:** `/home/pi/DragonSync/sinks/mqtt_sink.py.backup-20260203`
+
+**MQTT Discovery gelöscht:**
+- Alle 11 Sensoren (CPU, Memory, Disk, Temps, Speed, Course)
+- Device Tracker "WarDragon Pro"
+
+**Resultat:**
+- ✅ DragonSync funktioniert normal (Drohnen-Erkennung)
+- ✅ Keine nutzlosen 0-Wert-Sensoren in Home Assistant mehr
+- ✅ Kein MQTT-Spam mit leeren System Stats
+
+### Bei Updates beachten!
+
+**Wenn DragonSync via git update aktualisiert wird:**
+
+1. **Prüfe ob mqtt_sink.py überschrieben wurde:**
+   ```bash
+   grep -A 5 "def publish_system" /home/pi/DragonSync/sinks/mqtt_sink.py | grep "return.*Early"
+   ```
+
+2. **Falls JA (Patch wurde überschrieben):**
+   ```bash
+   # Restore Backup
+   sudo cp /home/pi/DragonSync/sinks/mqtt_sink.py.backup-20260203 /home/pi/DragonSync/sinks/mqtt_sink.py
+   
+   # ODER: Patch erneut anwenden (siehe oben)
+   
+   # Restart
+   sudo systemctl restart dragonsync
+   
+   # MQTT Discovery löschen
+   /tmp/remove-wardragon-discovery.sh
+   ```
+
+3. **Alternative: Upstream-Fix forken**
+   - Fork DragonSync Repository
+   - Patch permanent in Fork
+   - Von Fork statt Upstream pullen
+
+### Warum nicht wardragon_monitor.py aktivieren?
+
+**wardragon_monitor.py** könnte CPU/Memory liefern, aber:
+
+```bash
+# Service-Definition zeigt:
+ExecStart=/usr/bin/python3 /home/dragon/WarDragon/DragonSync/wardragon_monitor.py
+
+# Problem: Pfad ist falsch!
+# Erwartet: /home/dragon/WarDragon/
+# Haben:    /home/pi/DragonSync/
+```
+
+**Zusätzliche Probleme:**
+- Service ist nicht installiert/enabled
+- GPS-Tracking (Ground Speed) macht keinen Sinn für stationären Pi
+- Zynq/Pluto Temps fehlen trotzdem (keine Hardware)
+
+**Entscheidung:** Komplett deaktiviert statt halbwegs zu reparieren.
+
+### Nützliche System Stats alternativ
+
+**Wenn du Pi-System-Stats in Home Assistant willst:**
+
+Nutze **System Monitor Integration** (offiziell):
+```yaml
+# configuration.yaml
+sensor:
+  - platform: systemmonitor
+    resources:
+      - type: processor_use
+      - type: memory_use_percent
+      - type: disk_use_percent
+        arg: /
+      - type: last_boot
+```
+
+**Oder unser GPS-MQTT-Publisher** für GPS-Stats:
+- Bereits installiert: `gps-mqtt-publisher.service`
+- Liefert: Stratum, PPS Offset, NTRIP Status
+- Siehe: `~/docs/GPS-HOME-ASSISTANT.md`
+
+---
