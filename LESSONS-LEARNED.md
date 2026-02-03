@@ -52,6 +52,8 @@ Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
 | **mtp-probe Log-Spam** | **Bei USB-Instabilität prüft mtp-probe jedes Reconnect → Tausende Einträge in user.log!** |
 | mtp-probe deaktivieren | udev-Regel mit `ENV{MTP_NO_PROBE}="1"` für spezifisches VID:PID (ESP32: 303a:1001) |
 | claude-respond Timeout | Wartung kann >10min dauern → TimeoutSec=1800 (30min) essentiell |
+| **systemd Documentation= ungültige URL** | **systemd erwartet gültige URLs (https://, file://, man:), "inline" ist ungültig → Warning "Invalid URL, ignoring"** |
+| systemd Documentation= entfernen | Wenn keine externe Doku existiert, Zeile einfach löschen - Description ist ausreichend |
 | **ESP32-S3 USB CDC Flag** | **`ARDUINO_USB_CDC_ON_BOOT=1` (NICHT `ARDUINO_USB_CDC`!)** |
 | ESP32 USB CDC Timing | USB CDC braucht 3-5s zum Enumerieren - Monitoring VOR Reset starten! |
 | ESP32 Serial Monitoring | Python pyserial nutzen, `cat /dev/ttyACM0` ist unzuverlässig |

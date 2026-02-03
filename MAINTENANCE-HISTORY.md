@@ -152,6 +152,51 @@ Keine Probleme (alle timer-basierten Services laufen sauber)
 
 ---
 
+### systemd "Invalid URL" Warnings - ogn-balloon-notifier & drone-alert-notifier
+
+**Problem:** Claude Telegram-Nachricht: "Hinweis: 2x systemd-Warning 'Invalid URL' (harmlos)"
+```
+Feb 03 22:40:58 systemd[1]: /etc/systemd/system/ogn-balloon-notifier.service:3: Invalid URL, ignoring: inline
+Feb 03 22:40:58 systemd[1]: /etc/systemd/system/drone-alert-notifier.service:3: Invalid URL, ignoring: inline
+```
+
+**Root Cause:**
+- Beide Service-Files hatten in Zeile 3: `Documentation=inline`
+- systemd erwartet gültige URLs bei `Documentation=`:
+  - Gültig: `https://...`, `file:///...`, `man:...`
+  - Ungültig: "inline" (kein URL-Schema)
+- Warning bei jedem `systemctl daemon-reload` (mehrfach täglich)
+
+**Fix:**
+- `Documentation=inline` Zeile aus beiden Service-Files entfernt
+- Description ist aussagekräftig genug
+- `systemd-analyze verify`: Keine Errors mehr
+
+**Verification:**
+```bash
+# Vor Fix
+$ sudo systemctl daemon-reload
+systemd[1]: /etc/systemd/system/ogn-balloon-notifier.service:3: Invalid URL, ignoring: inline
+systemd[1]: /etc/systemd/system/drone-alert-notifier.service:3: Invalid URL, ignoring: inline
+
+# Nach Fix
+$ sudo systemctl daemon-reload
+(keine Warnings mehr)
+
+# Services laufen weiter
+$ systemctl status ogn-balloon-notifier drone-alert-notifier
+Active: active (running) since Tue 2026-02-03 08:26:59 CET; 14h ago
+```
+
+**Learnings:**
+- systemd Documentation= ist optional - wenn keine Doku existiert, weglassen
+- "Invalid URL" Warnings akkumulieren im Journal (Spam)
+- systemd-analyze verify testet Service-Files vor daemon-reload
+
+**Status:** ✅ Resolved - Keine Warnings mehr, Services laufen stabil
+
+---
+
 ### tar1090 HTTP 502 Error - Unbemerkt vom Watchdog
 
 **Problem:** User meldete "Der liefert gerade Fehler 502 - und das erscheint weder unter /status noch hat das in Watchdog bemerkt!"
