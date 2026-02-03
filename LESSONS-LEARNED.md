@@ -1,0 +1,184 @@
+# Lessons Learned
+
+**System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
+**Letzte Aktualisierung:** 2026-02-03
+
+Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
+
+---
+
+## Lessons Learned
+
+### Bash-Fallen
+| Problem | Lösung |
+|---------|--------|
+| `grep -c` bei 0 Treffern | `VAR=$(grep -c ... 2>/dev/null)` - Kein `\|\| echo "0"` nötig! |
+| heredoc mit Variablen | `<< 'EOF'` = literal, `<< EOF` = expandiert |
+| Log-Dateien lesen | Immer `sudo` für /var/log/* |
+| `source` von Dateien | Nie! Stattdessen: `VAR=$(grep "^KEY=" file \| cut -d= -f2-)` |
+| Temp-File Permissions | `chmod` VOR `mv`, nicht danach |
+| Log-Rotation | `tail -n > tmp && chmod 644 tmp && mv tmp log` |
+| Race Conditions | `flock` für atomare Operationen |
+| curl hängt | Immer `--max-time 10` verwenden |
+| **Pipe-while Subshell** | **`echo \| while` läuft in Subshell! Nutze `mapfile -t array < <(...)` + `for`** |
+| **`grep -c` + `\|\| echo "0"`** | **Gibt doppelte "0" aus! `grep -c` gibt IMMER Zahl zurück (mindestens 0), Exit 0 bei 0 Treffern!** |
+| **Architektur-Änderungen dokumentieren** | **Bei Service-Ersatz (zmq-decoder→atoms3-proxy): Watchdog, claude-respond, CLAUDE.md synchron updaten!** |
+
+### Systemspezifisch
+| Erkenntnis | Kontext |
+|------------|---------|
+| Feed-Client ≠ Haupt-Decoder | `/usr/bin/readsb` vs. `feed-*` Binaries |
+| AppArmor bei Störungen prüfen! | `dmesg \| grep apparmor.*DENIED` |
+| Bot/Watchdog/Wartung synchron | Alle 3 Service-Listen aktualisieren + daily-summary! |
+| Systemd: ReadWritePaths existieren | Sonst NAMESPACE-Fehler |
+| ProtectSystem=strict vs full | strict braucht explizite /etc Pfade |
+| `.claude/` muss pi gehören | Nach root-Ausführung: `chown -R pi:pi ~/.claude` |
+| pip install auf Debian | `--user --break-system-packages` für PEP 668 |
+| pip überschreibt apt | User-pip-Pakete haben Vorrang vor system-wide |
+| **FFTW Benchmarking** | **Bei JEDEM Start 10-15min! Braucht TimeoutStartSec=20m** |
+| Watchdog vs. langsame Starts | Watchdog kennt keine Grace-Period, False-Positives möglich |
+| FFTW Wisdom nicht gespeichert | `/etc/fftw/` existiert nicht, daher Benchmarking wiederholt sich |
+| **librtlsdr Debian-Paket veraltet** | **0.6.0-4 aus 2012, kennt V4 nicht! Nutze rtlsdr-blog stattdessen** |
+| V4-Library nach /usr/local/ | Debian-Paket nach /lib/, `/usr/local/` hat Vorrang (ldconfig) |
+| ldd zeigt Library-Links | `ldd /usr/bin/rbfeeder \| grep rtlsdr` prüft welche Version genutzt wird |
+| Kompilierte Library = Dummy-Paket | Wenn Library selbst kompiliert: Dummy-deb für apt-Abhängigkeiten erstellen |
+| **USB-Kabel testen!** | **Charge-Only Kabel (nur VCC+GND) verhindern USB-Kommunikation komplett** |
+| USB Cable Health Check | BLE cableQU zeigt: Widerstand, Pin-Belegung, Shield-Qualität |
+| ESP32 "Invalid image block" | Korrupte Firmware → Flash komplett löschen (erase_flash) vor Reflash |
+| esptool write-flash | Immer mit `-z` (komprimiert) und `0x0` (Startadresse) flashen |
+| drone-mesh-mapper Firmware | Lokal in `/home/pi/drone-mesh-mapper/firmware/*.bin`, kein GitHub Release |
+| **Telegram Bot Mehrfachinstanzen** | **PID-Lock + Command-Lock essentiell! Alte Instanzen über Tage = gecachte alte Ausgaben** |
+| Bot Lock-Files | PID: `/var/run/telegram-bot.pid`, Command: `/var/run/telegram-command.lock.$cmd` |
+| **mtp-probe Log-Spam** | **Bei USB-Instabilität prüft mtp-probe jedes Reconnect → Tausende Einträge in user.log!** |
+| mtp-probe deaktivieren | udev-Regel mit `ENV{MTP_NO_PROBE}="1"` für spezifisches VID:PID (ESP32: 303a:1001) |
+| claude-respond Timeout | Wartung kann >10min dauern → TimeoutSec=1800 (30min) essentiell |
+| **ESP32-S3 USB CDC Flag** | **`ARDUINO_USB_CDC_ON_BOOT=1` (NICHT `ARDUINO_USB_CDC`!)** |
+| ESP32 USB CDC Timing | USB CDC braucht 3-5s zum Enumerieren - Monitoring VOR Reset starten! |
+| ESP32 Serial Monitoring | Python pyserial nutzen, `cat /dev/ttyACM0` ist unzuverlässig |
+| ESP32 Serial.flush() | Kann blockieren - besser `delay(100)` nach Serial.println() |
+| **Monitoring ≠ Hardware** | **Monitoring-Problem gelöst ≠ Hardware-Problem gelöst! USB disconnects bleiben trotz sichtbarem Output** |
+| NimBLE vs Bluedroid | NimBLE spart ~370 KB Flash, ~15 KB RAM, stabiler für Scan-Only |
+| ESP32 Dual-Core | WiFi/BLE-Stacks laufen IMMER auf Core 0, egal wo Tasks gepinnt sind |
+| FreeRTOS Queues | Thread-safe zwischen Cores, aber Größe muss passen (testen!) |
+| ESP32 Task Heartbeats | Volatile Counter essentiell für Task-Liveness-Check |
+| **AtomS3 Firmware Docs** | **Vollständige Doku in `~/docs/ATOMS3-FIRMWARE.md`** |
+| **tmpfs Log-Verzeichnisse** | **Service mit `StandardOutput=append:/var/log/foo/` braucht tmpfiles.d-Regel!** |
+| tmpfiles.d für Custom Logs | `d /var/log/foo 0755 user group -` in `/etc/tmpfiles.d/foo.conf` |
+| Status 209/STDOUT | Systemd kann STDOUT-Datei nicht öffnen → Verzeichnis fehlt! |
+| tmpfs Boot Cleanup | `/var/log` wird bei jedem Boot komplett geleert (tmpfs-Mount) |
+| log-persist vs tmpfiles | log-persist nur für wichtige Logs, tmpfiles für Verzeichnis-Struktur |
+| **tmpfs Logs gefährlich** | **Services die nach /var/log/ schreiben brauchen Symlink nach /var/lib/** |
+| tmpfs-Cleanup löscht alles | `/var/log/` ist tmpfs - Verzeichnisse symlinken: `/var/log/xyz → /var/lib/xyz/logs` |
+| OGN Log-Verzeichnis fehlt | Nach tmpfs-Cleanup Services crashen (Status 209/STDOUT) - `/var/log/rtl-ogn/` muss persistieren |
+| **log-persist rekursiver Bug** | **VERZEICHNISSE in log-persist.conf verursachen `/var/log/xyz/xyz/xyz/...` Rekursion!** |
+| log-persist Best Practice | **NUR DATEIEN** in log-persist.conf! Verzeichnisse via Symlink → /var/lib/ persistent machen |
+| tmpfs-Volllauf Hauptursache | AIDE/apt rekursive Verzeichnisse (46M+3M von 50M) - NICHT Notfall-Cleanup sondern Root Cause fixen! |
+| **GPS Power-Cycle via UART** | **PAIR050 (Power ON), PAIR051 (Power OFF) für Software-Reset ohne Pi-Reboot** |
+| GPS Power-Cycle Ergebnis | Befehle werden akzeptiert aber GPS antwortet nicht sofort - braucht Cold Start (5-15 min) |
+| **GPS Cold Start Problem** | **Ohne Almanach/Ephemeris dauert erster Fix 5-15 Minuten (Satelliten-Download)** |
+| GPS A-GPS fehlt | gpsd kann Almanach nicht automatisch bereitstellen - braucht Assisted-GPS oder Geduld |
+| GPS Almanach-Quellen | CelesTrak (YUMA format), USCG Navigation Center - aber Format-Konvertierung nötig |
+| **LC29H RTK Base Station Modus** | **RTCM104V3-Ausgabe ist NICHT Bug sondern Feature! GPS war als RTK Base Station konfiguriert** |
+| **LC29H Base → Rover Wechsel** | **PAIR001 (Reset to Default), PAIR432,0 (Base aus), PQTMCFGRCVRMODE,W,1 (Rover), PAIR062 (NMEA), PQTMSAVEPAR** |
+| **LC29H NVRAM nicht persistent** | **PAIR-Befehle werden akzeptiert ($PAIR012 ACK), aber Konfiguration wird NICHT sofort angewendet - braucht Power-Cycle** |
+| **LC29H GPIO Reset unzureichend** | **GPIO 18 Reset lädt NVRAM NICHT neu - nur physischer Power-Cycle (HAT abziehen) funktioniert!** |
+| **LC29H NVRAM-Reload Methode** | **PAIR650 (Backup Mode) + Pi Reboot ODER physisches HAT abziehen (30s) = einzige Methoden für NVRAM-Reload** |
+| LC29H PAIR050/051 unzureichend | Software-Power-Cycle (PAIR050/051) lädt NVRAM NICHT neu - nur für Position-Reset |
+| LC29H PAIR650 Backup Mode | GPS geht in Shutdown, läuft auf V_BCKP (Batterie) weiter ODER komplett aus (ohne Batterie) |
+| **Pi Reboot OHNE PAIR650** | **Hilft NICHT! GPS läuft weiter auf 5V vom Pi, NVRAM wird nicht neu geladen** |
+| Waveshare LC29H Batterie | ML1220 optional - OHNE: Cold Start (5-15min), MIT: Hot Start (<1min). NVRAM persistent in beiden Fällen! |
+| LC29H NVRAM vs Backup Domain | NVRAM (Konfiguration) ist persistent auch ohne Batterie. V_BCKP nur für Ephemeris/Zeit/Position |
+| Waveshare LC29H WAKEUP-Pin | Nicht auf GPIO gemappt, nur intern verbunden - für Wake-up aus Backup Mode |
+| LC29H WAKEUP-Prozedur | Nach VCC-Restore: WAKEUP-Pin >10ms high ziehen (aber nur wenn extern zugänglich) |
+| **Waveshare LC29H GPIO Reset** | **GPIO 18 (Pin 12) = GPS_RST, High-aktiv via Q1 Transistor - Software-Reset möglich!** |
+| **Waveshare LC29H PPS Pin** | **GPIO 4 (Pin 7) = GPS_PPS, NICHT GPIO 18! Schaltplan zeigt korrekte Belegung** |
+| LC29H GPIO Reset Methode | HIGH-Impuls auf GPIO 18 (100ms): `GPIO.output(18, HIGH)` → `sleep(0.1)` → `GPIO.output(18, LOW)` |
+| **LC29H Pin-Belegung komplett** | **Pin 8/10: UART (GPIO 14/15), Pin 12: Reset (GPIO 18), Pin 7: PPS (GPIO 4), Pin 2/4: 5V, Pin 6/9/14/20/25: GND** |
+| **GPIO-Pins einzeln abziehen** | **UNMÖGLICH! 40-Pin-Header ist Block - nur ganzes HAT abziehen praktikabel** |
+| **LC29H Hybrid RTK Mode** | **460800 Baud ZWINGEND für NMEA + RTCM gleichzeitig! 115200 reicht NICHT (Buffer Overflow)** |
+| **LC29H NMEA vor RTCM** | **NMEA (PAIR062) MUSS vor RTCM (PAIR430) aktiviert werden! Sonst "verschluckt" RTCM-Flood den NMEA-Stream** |
+| **LC29H Factory Reset Baudrate** | **PAIR001 setzt IMMER auf 115200 zurück, egal welche Baudrate vorher war** |
+| **LC29H Base Station vs Rover** | **Base Station Mode (PAIR432,1) blockiert NMEA komplett! Muss zu Rover Mode (PQTMCFGRCVRMODE,W,1) wechseln** |
+| **LC29H PAIR-Befehle Reihenfolge** | **1. PAIR001 (Reset), 2. PAIR002 (Baud), 3. PAIR062 (NMEA), 4. PAIR430 (RTCM), 5. PAIR432 (Survey-In), 6. PAIR513 (Save)** |
+| **LC29H PAIR513 vs PQTMSAVEPAR** | **PAIR513 = Quectel Standard, PQTMSAVEPAR = Airoha-spezifisch. Beide speichern NVRAM, aber PAIR513 universeller** |
+| **LC29H Survey-In Parameter** | **PAIR432,1,600,2000 = Mode 1 (Survey-In), 600 Sekunden (10 min), 2000mm (2m Genauigkeit)** |
+| **LC29H NTRIP Server Setup** | **str2str nimmt gpsd NMEA+RTCM → NTRIP Caster (Port 5000). SW Maps/Rover holen RTK-Korrekturen** |
+| **LC29H Hybrid Mode Dokumentation** | **Vollständiges Handbuch: `~/docs/GPS-RTK-HYBRID-SETUP.md`** |
+| **LC29H "stumm" (keine Ausgabe)** | **NICHT Hardware-Defekt! Meist Baudraten-Niemandsland oder gpsd/str2str blockiert Port** |
+| **LC29H Notfall-Rettung** | **1. Services stoppen (gpsd/ntripcaster), 2. Hardware Reset (GPIO 18), 3. Baudraten-Scanner, 4. Blinder Factory Reset** |
+| **LC29H Baudraten-Scanner** | **Probiert 460800/115200/9600/230400/38400/57600 durch mit PAIR003 (Version Query) bis Antwort kommt** |
+| **LC29H Blinder Factory Reset** | **PAIR001 auf ALLEN Baudraten senden → Modul landet garantiert auf 115200** |
+| **NIEMALS `cat` auf GPS-Port!** | **RTCM-Binärdaten (460800 Baud) crashen UI/Terminal! Immer safe_check.py verwenden (analysiert, gibt nicht aus)** |
+| **GPS Safe Diagnose Tool** | **`safe_check.py` liest 1000 Bytes, prüft auf 0xD3 (RTCM) und $G (NMEA), gibt nur Status aus (HYBRID/NUR RTCM/NUR NMEA)** |
+| **RTCM erkennen ohne Output** | **Byte 0xD3 = RTCM3 Start, $G = NMEA Start. Analyse im Code, nie raw ausgeben!** |
+| **Pi Reboot NICHT nötig** | **`sudo fuser -k /dev/serial0` + `stty sane` + Hardware Reset (GPIO 18) = "Hot Reset" ohne Reboot** |
+| **claude CLI --files deprecated** | **`--files` Option existiert nicht! Claude hat Read tool, braucht keine vorgeladenen Dateien** |
+| **claude CLI --file für Cloud** | **`--file` ist für Cloud file_id:path, nicht für lokale Pfade** |
+| **LC29H Base-Variante (BA) unterdrückt NMEA** | **Im Fixed Mode (nach Survey-In) sendet Base-Variante NUR RTCM, kein NMEA! Das ist Firmware-Design, kein Bug!** |
+| **LC29H Single UART Problem** | **Waveshare HAT leitet nur UART 1 weiter, obwohl AG3335 Chip mehrere UARTs hat - NMEA+RTCM konkurrieren um Buffer** |
+| **RTCM Message 1005** | **Enthält Basisstation-Position (ARP ECEF X/Y/Z) - NMEA nicht nötig für Positionsbestimmung!** |
+| **pyrtcm für RTCM-Decode** | **`pip3 install pyrtcm` - Kann RTCM-Stream parsen und Message 1005 extrahieren** |
+| **NTRIP-Server braucht kein NMEA** | **str2str nimmt RTCM-Input, kein NMEA nötig - Base Station sendet nur RTCM an Rover** |
+| **Waveshare LC29H PPS auf GPIO 18!** | **NICHT GPIO 4! Doku war falsch - GPIO-Scan fand echten Pin (1 Puls/Sek, 11% Duty Cycle)** |
+| **PPS Open-Drain braucht Pull-Up** | **`pinctrl set PIN pu` aktiviert internen Pull-Up - sonst permanent LOW trotz blinkender LED!** |
+| **GPIO-Scan für verlorene Signale** | **Alle Pins mit Pull-Up scannen, wechselnde = Signal-Pin - rettet falsche Schaltpläne** |
+| **LC29H Pin-Belegung komplett** | **Pin 8/10: UART (GPIO 14/15), Pin 12: PPS (GPIO 18!), Pin 2/4: 5V, Pin 6/9/14/20/25: GND - Schaltplan hatte GPIO 4 falsch!** |
+| **chrony offset für PPS-Puls** | **`offset 0.102` kompensiert 100ms PPS-Puls - ohne offset ist PPS unusable (+101ms Offset)** |
+| **ppstest für PPS-Diagnose** | **`sudo ppstest /dev/pps0` zeigt Live-Pulse - sequence++ jede Sekunde = funktioniert** |
+| **Blinder Factory Reset GPS** | **PAIR001 auf ALLEN Baudraten (460800,115200,9600,230400,38400,57600,921600) - einer trifft!** |
+| **str2str ntripc vs ntrips** | **ntripc = Caster (empfängt Rover), ntrips = Server (sendet AN Caster) - oft verwechselt!** |
+| **LC29H PAIR753 PPS-Aktivierung** | **`PAIR753,1,100000,0,0` = Enable, 100ms Puls - funktioniert auch im Base Mode** |
+| **chrony lock system deprecated?** | **chrony 4.3 kennt `lock system` nicht - stattdessen: offset + prefer, NTP gibt grobe Zeit** |
+
+### WiFi & 802.11 Presence Detection
+| Erkenntnis | Kontext |
+|------------|---------|
+| **Probe Requests Parallel** | **WiFi Promiscuous Mode kann 0x40 (Probe), 0x80 (Beacon), 0xD0 (NAN) parallel empfangen** |
+| Probe Request Frame Type | Frame Control Byte 0 = `0x40` (Type 0, Subtype 4) für Probe Requests |
+| MAC in Probe Request | Source MAC in Bytes 10-15, nicht Bytes 4-9 (das ist Destination = FF:FF:FF:FF:FF:FF) |
+| SSID Tagged Parameters | TLV-Format: Tag (1 byte) + Length (1 byte) + Value (var), SSID = Tag 0x00 |
+| **MAC Randomization** | **iOS 14+/Android 10+ nutzen Random MAC pro Netzwerk, iOS 18+ rotiert täglich!** |
+| MAC Randomization Workaround | OUI bleibt erkennbar (erste 3 bytes) - Erkennung "Apple device" statt "John's iPhone" |
+| RSSI für Proximity | Je näher an 0 dBm, desto STÄRKER! -40 dBm = sehr nah, -70 dBm = mittel, <-80 dBm = zu weit |
+| Probe Request Rate | Residential: 10-50/min (2-5 Geräte), Office: 50-200/min, Airport: 1000-5000/min |
+| **IRAM_ATTR Pflicht** | **WiFi Callback läuft in ISR-Context (Core 0) - muss in IRAM, kein Serial.print()!** |
+| xQueueSendFromISR | ISR-Context braucht ISR-safe Varianten: `xQueueSendFromISR` statt `xQueueSend` |
+| FreeRTOS Queue Memory | Queue-Daten kommen aus PSRAM wenn verfügbar (30 x 47 bytes = 1410 bytes) |
+| OUI Database IEEE | IEEE vergibt Organizationally Unique Identifier (erste 3 Bytes MAC = Hersteller) |
+| OUI Update Frequency | Monatlich neue OUIs - Database sollte alle 30 Tage aktualisiert werden |
+| GDPR & MAC Addresses | MAC Address = Personal Data (kann Individuen identifizieren) - Retention Limits beachten! |
+| Probe Suppression | Geräte die mit AP verbunden sind senden weniger/keine Probe Requests |
+
+### Serial Port & Hardware Debugging
+| Erkenntnis | Kontext |
+|------------|---------|
+| **Serial Port Contention** | **Linux serial ports allow ONLY ONE reader! Multiple readers = "device disconnected" error (NOT hardware!)** |
+| **lsof für Serial Debugging** | **`lsof /dev/ttyACM0` zeigt welcher Prozess den Port blockiert - ESSENTIAL für Diagnose!** |
+| **"device disconnected" ≠ Hardware** | **Kann Software-Konflikt sein! Prüfe ZUERST `dmesg` auf echte USB-Disconnects** |
+| **Proxy Pattern für Serial** | **Single Reader + ZMQ Broadcast = Clean Solution für Multi-Consumer** |
+| **ZMQ PUB/SUB für Broadcast** | **Perfekt für 1:N Routing ohne Port-Konflikt, non-blocking sends** |
+| **dmesg vs Application Error** | **Kernel-Logs (dmesg) zeigen Hardware-Probleme, Application-Errors können Software sein** |
+| **atoms3-proxy Architektur** | **Serial → Parse → Route by JSON type → ZMQ PUB (4224=remoteid, 4225=probe)** |
+| **Time-Sharing Serial FAILS** | **Versuch, Port zeitversetzt zu nutzen funktioniert nicht - Port bleibt locked** |
+| **USB CDC Timing** | **ESP32 USB CDC braucht 3-5s - Monitoring VOR Reset starten!** |
+
+### NTRIP & GPS RTK
+| Erkenntnis | Kontext |
+|------------|---------|
+| **str2str Source Table leer** | **str2str sendet `STR;BASE;` ohne Metadaten - Apps wie Lefebure können Mountpoint nicht auswählen!** |
+| **NTRIP Caster vs Server** | **`ntripc` = Caster (empfängt Rover), `ntrips` = Server (sendet zu öffentlichem Caster) - verwechselt = Stunden Debugging!** |
+| **ICY 200 OK Protocol** | **NTRIP Mountpoint nutzt Icecast-Protokoll (nicht HTTP!) - `ICY 200 OK` + sofort Binärdaten, kein Content-Length** |
+| **HTTP Request 1:1 weiterleiten** | **str2str akzeptiert nur original Request! Neu aufbauen aus Headern = 0 bytes zurück!** |
+| **Transparent Proxy Pattern** | **Source Table für `GET /`, 1:1 Passthrough für `GET /BASE` - beste Lösung für leere Source Table** |
+| **Lefebure braucht GPS-Fix** | **App schließt nach 30s ohne GPS-Position! NTRIP funktioniert nur DRAUSSEN mit Satelliten-Fix** |
+| **Port 5000 vs 5001** | **Port 5000 = str2str (direkt), Port 5001 = Proxy (mit Source Table) - Apps sollten Proxy nutzen** |
+| **RTCM-Stream = endlos** | **NTRIP-Client erwartet kontinuierlichen Stream (~5 kbps), keine kurzen Requests wie HTTP!** |
+
+### Security Best Practices
+| Pattern | Warum |
+|---------|-------|
+| `set -o pipefail` | Erkennt Fehler in Pipes (z.B. `cmd1 \| cmd2`) |
+| Input-Sanitization | Entferne `$()`, Backticks, `${` aus User-Input |
+| Path-Validierung | Prüfe auf `..` und absolute Pfade bei Config-Einträgen |
+| Atomare Dateiops | `flock` oder `(umask 077 && touch file)` |
+| Keine Secrets in Logs | Token/Passwörter nie in Fehlermeldungen |
