@@ -197,6 +197,57 @@ Active: active (running) since Tue 2026-02-03 08:26:59 CET; 14h ago
 
 ---
 
+### grep -c Doppel-Null Regression - "Einsame 0" im Telegram /status
+
+**Problem:** User: "Du hast wieder in irgendeiner Änderung einen alten Fehler wieder eingebaut mit der einsamen 0"
+```
+🟢 GPS/RTK (4/4) - NTRIP Clients: 0
+0
+```
+
+**Root Cause:**
+- telegram-bot-daemon Zeile 413: `grep -c ":5001 " || echo "0"`
+- Mit `set -o pipefail` aktiviert:
+  1. Pipe schlägt fehl wenn `ss` keine Verbindungen findet
+  2. `grep -c` gibt trotzdem "0" aus (0 Treffer gefunden)
+  3. Pipe-Exit-Code ist != 0 (wegen pipefail)
+  4. `|| echo "0"` triggert (weil Pipe fehlgeschlagen)
+  5. Ergebnis: "0" (grep) + "\n0" (echo) = "0\n0"
+
+**Warum passiert das?**
+- `grep -c` gibt IMMER eine Zahl zurück (mindestens 0)
+- Mit `set -o pipefail`: Pipe-Exit != 0 auch wenn grep selbst Exit 0 hat
+- `|| echo "0"` ist überflüssig UND falsch
+
+**Fix:**
+- Ersetze `|| echo "0"` durch `|| true` in allen betroffenen Skripten:
+  - `/usr/local/sbin/telegram-bot-daemon` (Zeile 413)
+  - `/usr/local/sbin/claude-respond-to-reports` (Zeile 558)
+  - `/usr/local/sbin/cve-pip-patcher` (Zeile 43)
+
+**Verification:**
+```bash
+# Test mit pipefail
+$ set -o pipefail
+$ echo "" | grep -c "foo" || echo "0"
+0        # Nur eine 0, korrekt!
+
+# Ohne pipefail (alter Fehler)
+$ set +o pipefail
+$ false | grep -c "foo" || echo "0"
+0
+0        # Doppel-Null!
+```
+
+**Lessons Learned:**
+- `grep -c` mit `|| echo "0"` ist ein Anti-Pattern
+- Immer `|| true` verwenden (für error handling bei pipefail)
+- ALLE Skripte durchsuchen, nicht nur das gemeldete
+
+**Status:** ✅ Resolved - 3 Skripte gefixt, Bot neu gestartet
+
+---
+
 ### tar1090 HTTP 502 Error - Unbemerkt vom Watchdog
 
 **Problem:** User meldete "Der liefert gerade Fehler 502 - und das erscheint weder unter /status noch hat das in Watchdog bemerkt!"

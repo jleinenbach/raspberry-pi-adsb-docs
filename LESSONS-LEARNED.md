@@ -21,7 +21,7 @@ Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
 | Race Conditions | `flock` für atomare Operationen |
 | curl hängt | Immer `--max-time 10` verwenden |
 | **Pipe-while Subshell** | **`echo \| while` läuft in Subshell! Nutze `mapfile -t array < <(...)` + `for`** |
-| **`grep -c` + `\|\| echo "0"`** | **Gibt doppelte "0" aus! `grep -c` gibt IMMER Zahl zurück (mindestens 0), Exit 0 bei 0 Treffern!** |
+| **`grep -c` + `\|\| echo "0"`** | **Gibt doppelte "0" aus bei `set -o pipefail`! grep gibt "0" aus, aber Pipe-Exit != 0 → `\|\| echo "0"` triggert → "0\\n0". FIX: `\|\| true` statt `\|\| echo "0"`** |
 | **Architektur-Änderungen dokumentieren** | **Bei Service-Ersatz (zmq-decoder→atoms3-proxy): Watchdog, claude-respond, CLAUDE.md synchron updaten!** |
 
 ### Systemspezifisch
