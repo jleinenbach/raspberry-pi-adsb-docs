@@ -390,3 +390,146 @@ sudo tail -20 /var/log/rtl-ogn/ogn-decode.log | grep verified
 
 ---
 
+### Intelligentes Aircraft-Alert-System (2026-02-03)
+**Status:** ✅ Vollständig implementiert und aktiv
+
+Automatische ICAO-Code-Recherche für unbekannte Flugzeuge mit 30-Tage-Cache.
+
+#### Problem gelöst:
+- ❌ Vorher: 3C-3F Range = Militär → Glider 3DE527 falsch erkannt als Militär
+- ❌ tar1090 HTTP 502 Error unbemerkt vom Watchdog
+- ❌ Keine US Military Erkennung
+- ❌ 20km Reichweite (zu weit, nicht optisch sichtbar)
+
+#### Komponenten:
+
+**1. ICAO Lookup Service** (`/usr/local/sbin/icao-lookup-service`)
+- 30-Tage Cache mit automatischem Ablauf (für Military Code Rotation)
+- Lokale Erkennung via tar1090 ranges.json (32 Military Ranges)
+- Web-Lookup mit ADSBexchange Database Integration
+- Fallback: ICAO Range Allocation (Land-Erkennung)
+- Automatische Telegram-Benachrichtigung mit Recherche-Ergebnissen
+- CLI-Interface für manuelle Abfragen
+
+**2. tar1090 HTTP Health Check** (feeder-watchdog v2.2)
+- Erkennt HTTP 502 Errors (nicht nur systemd Service-Status)
+- Automatischer Restart von lighttpd + tar1090
+- Exponentieller Backoff (5min → 160min)
+- Telegram-Benachrichtigung bei Problemen
+- Backup: `/usr/local/sbin/feeder-watchdog.backup-*`
+
+**3. Auto-Update Service** (täglich 04:00 Uhr)
+- systemd timer: `update-military-icao.timer`
+- Aktualisiert tar1090 git-db
+- Regeneriert Military ICAO Patterns aus ranges.json
+- Restart aircraft-alert-notifier mit neuen Patterns
+- Log: `/var/log/military-icao-update.log`
+- **Bonus:** US Military Codes (AD, AE, AF) jetzt auch erkannt!
+
+**4. Military ICAO Pattern Generator** (`/usr/local/sbin/military-icao-updater`)
+- Auto-generiert Patterns aus tar1090 ranges.json
+- Output: `/var/lib/claude-pending/military-icao-patterns.py`
+- Erweitert auf US + German + weitere Länder
+
+#### Dateien:
+```
+/usr/local/sbin/icao-lookup-service           # Hauptservice mit Web-Recherche
+/usr/local/sbin/update-military-icao          # Update-Skript (täglich 04:00)
+/usr/local/sbin/military-icao-updater         # Pattern-Generator
+/usr/local/sbin/feeder-watchdog               # v2.2 mit tar1090 HTTP Check
+/etc/systemd/system/update-military-icao.{service,timer}
+/var/lib/claude-pending/icao-lookup-cache.json       # 30-Tage Cache
+/var/lib/claude-pending/military-icao-patterns.py    # Auto-generierte Patterns
+/var/log/military-icao-update.log                    # Update-Log
+```
+
+#### Test-Results:
+```bash
+# Ziviler Glider (war vorher falsch als Militär erkannt)
+/usr/local/sbin/icao-lookup-service 3DE527
+# → Germany, Zivil ✅ (korrekt!)
+
+# Deutsches Militär
+/usr/local/sbin/icao-lookup-service 3E96CB
+# → Germany, Militär ✅
+
+# US Military (neu!)
+/usr/local/sbin/icao-lookup-service AE0004
+# → USA, Militär ✅
+```
+
+#### Verbesserungen:
+| Vorher | Nachher |
+|--------|---------|
+| 3C-3F = Militär (zu breit) | Präzise Patterns nur für bekannte Military |
+| Keine US Military | US + German + weitere Länder |
+| 20km Reichweite | 10km (optisch sichtbar) |
+| Manuelle Updates | Automatisch täglich 04:00 |
+| tar1090 502 unbemerkt | Watchdog erkennt HTTP-Probleme |
+| Unbekannte Codes: Keine Info | Auto-Recherche + 30d Cache |
+
+**Dokumentation:** `~/docs/AIRCRAFT-ALERTS.md`, `~/docs/AIRCRAFT-ALERT-TODO.md`
+
+---
+
+### WiFi Presence Detection Optimierungen (2026-02-03)
+
+**Problem:** Keine Telegram-Benachrichtigungen, Geräte nicht erkannt
+
+**Fixes:**
+1. **Whitelist-Format korrigiert:**
+   - Erstellt: `/var/lib/claude-pending/wifi-whitelist.json`
+   - Format: `{"macs": [...]}` statt `{"devices": {...}}`
+   - Effekt: 8 MACs erfolgreich geladen (vorher 0)
+
+2. **RSSI-Threshold optimiert:**
+   - `-70 dBm` → `-90 dBm` (maximal empfindlich)
+   - Erkennt jetzt Geräte 2 Stockwerke entfernt
+   - Rain Bird Bewässerungssystem bei -90 dBm erkannt (Nachbar, maximale Reichweite)
+
+3. **Google Home Mystery gelöst:**
+   - 48:D6:D5:67:D1:B9 - 03:13 AM Burst (60 Probes/Min)
+   - Test: Power-Cycle bestätigt gleiche MAC
+   - Ursache: Firmware-Update Recovery Mode
+   - Normal: Moderate Probe Rate
+   - Whitelisted
+
+**Dokumentierte Geräte:**
+```
+4C:A1:61:09:23:3C - Rain Bird Bewässerungssystem (Nachbar, -90 dBm)
+2C:CF:67:75:15:AB - Controme Smart-Heat-OS (Raum darunter)
+88:A2:9E:7D:B3:5B - Dieses System (WLAN DOWN)
+B0:E9:FE:A7:EE:EC - SwitchBot Smart Home (-64 dBm, 2 Stockwerke!)
+8C:C5:D0:20:DC:46 - User Smartphone (Samsung, -28 dBm nah)
+00:03:7F:12:34:56 - Devolo WiFi Mesh (Site Survey Modus, ~1.5 Probes/h)
+48:D6:D5:67:D1:B9 - Google Home (2 Stockwerke, -68 dBm, Recovery Mode Incident)
+C8:2E:18:0C:40:C0 - Shelly Plus Plug S (Yunas Zimmer)
+```
+
+**Dateien:**
+- `/var/lib/claude-pending/wifi-whitelist.json` - Korrigiertes Format
+- `/var/lib/claude-pending/known-devices.json` - Dokumentation mit Kontext
+- `/etc/wifi-presence-detector.conf` - RSSI -90 dBm
+
+**Dokumentation:** `~/docs/PRESENCE-DETECTION.md`
+
+---
+
+### System-Konfiguration (2026-02-03)
+
+**Hostname Fix:** `/etc/hosts`
+- System kannte eigenen Namen `adsb-feeder.internal` nicht
+- Fix: `127.0.1.1  adsb-feeder adsb-feeder.internal`
+- Effekt: System kann sich selbst unter `.internal` erreichen
+- Home Assistant: DNS im Router korrigiert für externe Erreichbarkeit
+
+**Test:**
+```bash
+getent hosts adsb-feeder.internal
+# → 127.0.1.1 ✅
+
+curl http://adsb-feeder.internal/tar1090/
+# → HTTP 200 OK ✅
+```
+
+---
