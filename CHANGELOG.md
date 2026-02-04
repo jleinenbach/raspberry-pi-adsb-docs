@@ -1,7 +1,7 @@
 # System Changelog
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-03
+**Letzte Aktualisierung:** 2026-02-04
 
 Chronologische Historie aller implementierten System-Änderungen.
 
@@ -172,6 +172,31 @@ Chronologische Historie aller implementierten System-Änderungen.
   - **Fix claude-respond:** USB-Fehler-Zählung korrigiert (TOTAL_COUNT hatte "0\n0" wegen `|| echo "0"`)
   - **Grund:** `grep -c` gibt IMMER eine Zahl zurück, `|| echo "0"` ist überflüssig und verursacht doppelte Ausgabe
   - **Effekt:** Keine falschen Eskalationen mehr, USB-Statistik funktioniert korrekt
+- **Telegram /errors - Intelligente Fehleranalyse (2026-02-04):**
+  - **Backend:** `/usr/local/sbin/error-troubleshooter` - Sammelt journalctl Errors, analysiert mit Claude
+  - **Actions:** analyze (timeframe), check-service (health), usb-stats (disconnects), restart-service
+  - **Telegram Integration:** Inline Keyboard mit 5 Buttons (Details, Auto-Fix, Service-Check, USB-Stats, Abbrechen)
+  - **Callback Handler:** Verarbeitet Button-Klicks, speichert Kontext in `/run/telegram-errors-context.json`
+  - **Intelligente Klassifikation:** Keine Errors (stabil), Harmlose Errors (collectd RRD), Echte Probleme (Top 3 mit Actions)
+  - **Claude-Prompt:** Kurze prägnante Analyse, ignoriert bekannte harmlose Warnungen
+  - **Command Lock:** Erweitert um /errors (3 Sekunden Doppel-Request-Schutz)
+  - **Bugfixes:** Command Lock trap statement, Exit Code Check, JSON Parsing mit Fallbacks
+  - **Status:** ✅ Produktiv - Ermöglicht schnelle Fehlerdiagnose via Telegram mit interaktiven Buttons
+
+### Bugfixes (2026-02-04)
+- **Telegram Command Lock trap statement:** `trap 'rm -f "''"' RETURN` → `trap "rm -f \"$lock_file\"" RETURN`
+  - Problem: Variable $lock_file wurde nicht expandiert, Lock-Files blieben liegen
+  - Fix: Double-Quotes für korrekte Variable-Expansion
+- **error-troubleshooter Exit Code Check:** `if [ $? -ne 0 ]` nach command substitution
+  - Problem: `$?` prüfte falschen Exit Code (immer 0 bei Variable-Zuweisung)
+  - Fix: `if [ -z "$analysis" ] || ! echo "$analysis" | jq -e . >/dev/null 2>&1`
+- **TELEGRAM Tag Parsing Bug:** Claude setzte Markdown `###` vor `[TELEGRAM:OK]`
+  - Problem: Parser extrahierte "###" statt Nachricht bei getrennten Zeilen
+  - Root Cause: `grep '[TELEGRAM:OK]' | sed 's/\[TELEGRAM:OK\]//' | head -1` matched nur erste Zeile
+  - Fix: Robustes Parsing mit grep -A 10, filtert # und leere Zeilen, nimmt nächste Content-Zeile
+  - Fallback: Tag in derselben Zeile (sed extrahiert nach Tag, entfernt Markdown-Prefixes)
+  - Prompt Fix: "WICHTIG: Tag MUSS am Zeilenanfang stehen, OHNE Markdown-Prefix"
+  - Test: Alle 5 Edge-Cases funktionieren (getrennte Zeilen, in einer Zeile, mit ###, multiline, Leerzeilen)
 
 ### Skript-Security Audit (2026-01-25)
 **Peer Review aller eigenen Skripte in `/usr/local/sbin/`**
