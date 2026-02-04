@@ -27,6 +27,27 @@ Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
 | **$? nach command substitution** | **`local var=$(cmd); if [ $? -ne 0 ]` prüft IMMER 0 (Variable-Zuweisung)! FIX: `if [ -z "$var" ] \|\| ! validate "$var"`** |
 | **Text-Parsing robustness** | **Bei Line-by-Line Parsing: Filter leere Zeilen, Markdown-Prefixes (###, **, *), trim whitespace. Nutze grep -A für multiline Context.** |
 
+### Telegram Bot & HTML Formatting (2026-02-04)
+
+**KRITISCH:** Telegram HTML ist NICHT Standard-HTML!
+
+| Problem | Detail | Lösung |
+|---------|--------|--------|
+| **`&` in `<b>` Tags** | `<b>Text & Text</b>` → "Can't find end tag for 'b'" | Ersetze durch Text: "Text und Text" |
+| **`&amp;` escaped** | `<b>Text &amp; Text</b>` → GLEICHER Fehler! | Auch Escaping hilft nicht! |
+| **Workaround 1** | Bold-Tags aufteilen | `<b>Text</b> &amp; <b>Text</b>` ✅ |
+| **Workaround 2** | `&` durch Wort ersetzen | "Almanach und Ephemeris" ✅ |
+| **HTML vs MarkdownV2** | MarkdownV2: 18 Special Chars, HTML: nur 3 (`&<>`) | **HTML ist viel einfacher!** |
+| **Escaping-Funktion** | `escape_html()` statt `escape_markdown_v2()` | `text="${text//&/&amp;}"` etc. |
+| **`\|` in Markdown** | MarkdownV2 braucht `\|`, HTML nicht | In HTML: `|` direkt nutzen |
+| **Backticks in Bash** | `` `$var` `` ist Command Substitution! | Nur für Markdown-Rendering, nicht in Bash! |
+| **Debug-Strategie** | Bei HTML-Fehlern: Zeile für Zeile testen | Python-Skript mit incrementellem Build |
+| **Telegram API Test** | Direkt mit curl testen, nicht über Bot | Schnelleres Debugging |
+
+**Lesson:** Bei "Can't find end tag" Fehler - prüfe NICHT nur Tags, sondern auch **Zeichen INNERHALB** der Tags!
+
+**Empfehlung:** HTML statt MarkdownV2 für alle Telegram-Bots verwenden.
+
 ### Systemspezifisch
 | Erkenntnis | Kontext |
 |------------|---------|

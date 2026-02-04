@@ -7,6 +7,40 @@ Chronologische Historie aller implementierten System-Änderungen.
 
 ---
 
+## 2026-02-04 - Telegram Bot: /gps Befehl und HTML Migration
+
+### Hinzugefügt
+- **`/gps` Befehl**: Zeigt umfassenden GPS/RTK Status
+  - Hardware-Info (Waveshare LC29H, PPS Pin)
+  - GPS Fix Qualität und Position (RTK Fixed)
+  - PPS Zeitgenauigkeit (Stratum, Offset, Samples)
+  - Satelliten-Schätzung und Signalqualität
+  - Almanach/Ephemeris Status
+  - NTRIP Base Station Status (Clients, Uptime)
+  - Service-Status (ntripcaster, ntrip-proxy, chronyd, gps-mqtt)
+  - Software-Versionen (RTKLIB, chrony, gpsd)
+
+### Geändert
+- **Telegram Bot Migration zu HTML**:
+  - Alle Bot-Befehle von Markdown V2 auf HTML umgestellt
+  - `parse_mode="HTML"` statt Markdown
+  - `escape_html()` Funktion (escaped nur `&`, `<`, `>`)
+  - `*Text*` → `<b>Text</b>` in allen Funktionen
+  - Escaped Pipes `\|` entfernt (nicht nötig in HTML)
+  - Viel einfacher als MarkdownV2 (18 vs 3 Special Characters)
+
+### Behoben
+- **Telegram HTML `&` Zeichen Problem**:
+  - Telegram HTML erlaubt KEIN `&` innerhalb von `<b>` Tags
+  - "Almanach & Ephemeris" → "Almanach und Ephemeris"
+  - Verursachte "Can't find end tag corresponding to start tag 'b'" Fehler
+  - `&amp;` Escaping funktioniert auch nicht innerhalb von Bold-Tags
+
+### Entfernt
+- GNSS-Systeme Abschnitt aus `/gps` (statische Info ohne Mehrwert)
+
+---
+
 ## Implemented Changes (Gruppiert)
 
 ### Security & Hardening (2026-01-16 bis 2026-01-31)
@@ -227,6 +261,17 @@ Chronologische Historie aller implementierten System-Änderungen.
   - Fallback: Tag in derselben Zeile (sed extrahiert nach Tag, entfernt Markdown-Prefixes)
   - Prompt Fix: "WICHTIG: Tag MUSS am Zeilenanfang stehen, OHNE Markdown-Prefix"
   - Test: Alle 5 Edge-Cases funktionieren (getrennte Zeilen, in einer Zeile, mit ###, multiline, Leerzeilen)
+- **Telegram Bot Migration zu Markdown V2 (2026-02-04):**
+  - **Problem:** Telegram API Markdown (V1) ist deprecated, Markdown V2 hat strengere Escaping-Regeln
+  - **Migration:** `parse_mode="Markdown"` → `parse_mode="MarkdownV2"` in send_message_raw()
+  - **Escaping:** Neue `escape_markdown_v2()` Funktion escaped 18 Sonderzeichen: `_ * [ ] ( ) ~ \` > # + - = | { } . !`
+  - **Bash-Fallen behoben:**
+    - Backticks sind KEINE Markdown-Escapes, sondern Bash Command Substitution (fatal!)
+    - Curly Braces `{}` können nicht mit Bash Parameter Expansion escaped werden → sed verwendet
+  - **Text-Literale:** Alle statischen Texte in Messages müssen ebenfalls escaped werden (nicht nur Variablen)
+  - **GPS-Message:** Alle 21 Variablen + Text-Literale korrekt escaped (Klammern, Bindestriche, Ampersand)
+  - **Funktionstest:** `/tmp/test-escape-markdown-v2.sh` validiert alle Sonderzeichen
+  - **Status:** ✅ Produktiv - Alle Nachrichten nutzen jetzt Markdown V2
 
 ### Skript-Security Audit (2026-01-25)
 **Peer Review aller eigenen Skripte in `/usr/local/sbin/`**
