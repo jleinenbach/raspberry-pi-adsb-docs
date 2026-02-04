@@ -3,9 +3,13 @@
 **Raspberry Pi 4 Model B** | Debian 12 (bookworm)
 **Standort:** 49.86625, 10.83948 | 283m
 
+> **Quick Start:** `~/docs/QUICKREF.md` ⚡ - Schnelle Referenz für häufige Befehle
+>
 > **Dokumentation:** `~/docs/FEEDS.md` | `~/docs/MONITORING.md` | `~/docs/OGN-SETUP.md` | `~/docs/HOME-ASSISTANT.md` | `~/docs/DRAGONSYNC.md` | `~/docs/DRAGONSYNC-API.md` | `~/docs/ATOMS3-FIRMWARE.md` | `~/docs/PRESENCE-DETECTION.md` | `~/docs/GPS-NTRIP-PROXY.md` | `~/docs/GPS-AGNSS.md` | `~/docs/GPS-HOME-ASSISTANT.md`
-> 
+>
 > **Historie:** `~/docs/CHANGELOG.md` | `~/docs/MAINTENANCE-HISTORY.md` | `~/docs/LESSONS-LEARNED.md`
+>
+> **Resources:** `~/docs/resources/` - Quectel PDFs & GitHub-Projekte
 
 ## 🛩️ Drei parallele Luftverkehrs-Empfänger
 
