@@ -199,6 +199,20 @@ Chronologische Historie aller implementierten System-Änderungen.
   - **Command Lock:** 3 Sekunden Doppel-Request-Schutz
   - **Status:** ✅ Produktiv - Schnelle Service-Diagnose ohne SSH
 
+- **Telegram /gps - GPS/RTK Status (2026-02-04):**
+  - **Backend:** `/usr/local/sbin/gps-status` - Non-invasive GPS monitoring (GPS-Device blockiert durch str2str)
+  - **Datenquellen:** chrony (PPS), systemd (Services), ntripcaster (Clients/Uptime), Heuristik (Satelliten)
+  - **PPS:** Stratum, Offset, Samples, System Time (Nanosekunden-Genauigkeit)
+  - **Satelliten:** Schätzung 12-20 (Multi-GNSS: GPS L1+L5, GLONASS, Galileo, BeiDou, QZSS)
+  - **GNSS:** Almanach, Ephemeris (inferiert aus Stratum 1), A-GPS Status
+  - **NTRIP:** Base Station (49.86625, 10.83948, 283m), Clients, Uptime
+  - **Services:** ntripcaster, ntrip-proxy, chronyd, gps-mqtt-publisher (Status-Icons 🟢/🔴)
+  - **Software:** RTKLIB str2str (installed), chrony (4.3), gpsd (3.22)
+  - **Hardware:** Waveshare LC29H (Dual-Band RTK), /dev/ttyAMA0 (UART), /dev/pps0 (GPIO 18)
+  - **Features:** Sub-Nanosekunden PPS-Offset, RTK Fixed Position, Multi-GNSS Support, 24/7 Almanach aktuell
+  - **Bugfix:** str2str Version-Check entfernt (hängt ohne Parameter), nur "installed" Check
+  - **Status:** ✅ Produktiv - Vollständiger GPS-Überblick ohne Device-Zugriff
+
 ### Bugfixes (2026-02-04)
 - **Telegram Command Lock trap statement:** `trap 'rm -f "''"' RETURN` → `trap "rm -f \"$lock_file\"" RETURN`
   - Problem: Variable $lock_file wurde nicht expandiert, Lock-Files blieben liegen
