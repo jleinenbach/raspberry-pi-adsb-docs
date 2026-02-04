@@ -182,6 +182,14 @@ Chronologische Historie aller implementierten System-Änderungen.
   - **Command Lock:** Erweitert um /errors (3 Sekunden Doppel-Request-Schutz)
   - **Bugfixes:** Command Lock trap statement, Exit Code Check, JSON Parsing mit Fallbacks
   - **Status:** ✅ Produktiv - Ermöglicht schnelle Fehlerdiagnose via Telegram mit interaktiven Buttons
+- **Telegram /flugzeug - Flugzeugdetails nachschlagen (2026-02-04):**
+  - **Backend:** `/usr/local/sbin/aircraft-lookup` - ICAO hex → Stammdaten + Live-Tracking
+  - **Datenquellen:** readsb aircraft.json (Live) + tar1090 aircraft.csv (Stammdaten)
+  - **Ausgabe:** Registration, Typ, Beschreibung, Callsign, Höhe, Speed, Track, Position, RSSI, Squawk, Emergency
+  - **Features:** Automatische Normalisierung, Format-Validierung, Emergency-Anzeige (🟢/🔴), metrisch + imperial
+  - **tar1090 Integration:** Direkt-Link zum Flugzeug in Karte
+  - **Command Lock:** 3 Sekunden Doppel-Request-Schutz
+  - **Status:** ✅ Produktiv - Schnelle Flugzeugabfrage via Telegram
 
 ### Bugfixes (2026-02-04)
 - **Telegram Command Lock trap statement:** `trap 'rm -f "''"' RETURN` → `trap "rm -f \"$lock_file\"" RETURN`
