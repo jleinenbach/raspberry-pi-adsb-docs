@@ -190,6 +190,14 @@ Chronologische Historie aller implementierten System-Änderungen.
   - **tar1090 Integration:** Direkt-Link zum Flugzeug in Karte
   - **Command Lock:** 3 Sekunden Doppel-Request-Schutz
   - **Status:** ✅ Produktiv - Schnelle Flugzeugabfrage via Telegram
+- **Telegram /service - Service-Diagnose (2026-02-04):**
+  - **Backend:** `/usr/local/sbin/service-info` - systemd Service-Status + Details
+  - **Zwei Modi:** Ohne Parameter (Liste aller 29 Services mit Ampeln), Mit Parameter (detaillierte Diagnose)
+  - **Liste-Modus:** Kategorisiert nach Core, Feeds, MLAT, Web, OGN, DragonSync, Alerts, GPS - Status-Icons 🟢/🔴/⚫/🟡
+  - **Detail-Modus:** Status, Enabled, PID, Uptime, Restart-Count, Memory, Tasks, Result, Exit-Code, letzte Logs
+  - **Features:** Uptime-Formatierung (d/h/m), Problem-Diagnose (Result/Exit bei failed), Log-Auszug (letzte Zeilen)
+  - **Command Lock:** 3 Sekunden Doppel-Request-Schutz
+  - **Status:** ✅ Produktiv - Schnelle Service-Diagnose ohne SSH
 
 ### Bugfixes (2026-02-04)
 - **Telegram Command Lock trap statement:** `trap 'rm -f "''"' RETURN` → `trap "rm -f \"$lock_file\"" RETURN`
