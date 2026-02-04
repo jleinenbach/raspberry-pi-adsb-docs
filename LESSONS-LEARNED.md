@@ -219,3 +219,23 @@ Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
 | **Stratum 1 Server im LAN** | **GPS PPS macht Pi zu primärer Zeitquelle - besser als öffentliche NTP-Server** |
 | **NTP vs NTS** | **NTS = Network Time Security, verschlüsselte NTP-Verbindung (PTB unterstützt)** |
 | **chronyd cmdallow** | **`cmdallow 127.0.0.1` erlaubt `chronyc clients` Monitoring** |
+
+### GPS & AGNSS (2026-02-04)
+
+| Problem | Detail | Lösung |
+|---------|--------|--------|
+| **MediaTek EPO ≠ Quectel PAIR** | LC29H (Quectel) versteht MediaTek EPO.DAT nicht | Chip-spezifisches Format nötig |
+| **Public EPO ≠ Vendor EPO** | `epodownload.mediatek.com` ist generic | LC29H braucht `wpepodownload.mediatek.com` mit vendor/project/device_id |
+| **Blind AGNSS Testing** | EPO senden ohne NMEA-Feedback → GPS verwirrt 8min | **NIE** EPO senden ohne Device-Zugriff für Diagnose |
+| **str2str blockiert Device** | `/dev/ttyAMA0` 24/7 belegt, kein NMEA-Zugriff | Service stoppen für Diagnose (Downtime!) |
+| **TTFF Messung** | `systemd-analyze` während Boot → Fehler | Warte 60s nach Boot, dann messe |
+| **AGNSS bei 24/7 Base Station** | Almanach verfällt NIE (<30d Offline), TTFF 60-90s akzeptabel | **AGNSS unnötig** für Base Stations |
+| **Backup Battery Alternative** | ML1220 Battery (5-10€) → Warm Start <5s | Einfacher als AGNSS-Server-Credentials |
+| **GitHub als Dokumentation** | Quectel PDFs in sbcshop/GPS-Hat, Code in platformio-quectel-examples | GitHub-Search ist besser als Vendor-Support |
+| **PAIR Protocol** | Quectel proprietary, binary mode `$PMTK253,1,<baud>` | Siehe Quectel AGNSS Application Note |
+| **EPO Server Credentials** | vendor/project/device_id nicht öffentlich | Muss bei Quectel Technical Support angefordert werden |
+
+**WICHTIG:** Bei GPS mit blockiertem Device (str2str, gpsd, etc.) - AGNSS nur mit Service-Unterbrechung möglich!
+
+**Alternative:** Backup-Batterie ist wartungsfreier und zuverlässiger als AGNSS-Server-Abhängigkeit.
+
