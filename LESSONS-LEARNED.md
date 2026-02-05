@@ -239,6 +239,27 @@ Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
 
 **Alternative:** Backup-Batterie ist wartungsfreier und zuverlässiger als AGNSS-Server-Abhängigkeit.
 
+### Home Assistant & MQTT Discovery (2026-02-05)
+
+| Problem | Detail | Lösung |
+|---------|--------|--------|
+| **device_class nur für bestimmte Entity-Typen** | `device_class: 'connectivity'` nur für `binary_sensor`, nicht `sensor` | **Richtige Entity-Typ wählen** - ON/OFF = binary_sensor |
+| **MQTT Discovery Fehler** | `'expected SensorDeviceClass...'` Error in HA | **discovery topic prüfen**: `sensor/...` vs `binary_sensor/...` |
+| **Retained Messages löschen** | Alte falsche Discovery bleibt im MQTT Broker | `mosquitto_pub -t "topic" -n -r` (null + retain) |
+| **Sensor vs Binary Sensor** | Numeric/String = sensor, ON/OFF = binary_sensor | Klare Trennung, unterschiedliche discovery topics |
+| **Python MQTT Array-Struktur** | Getrennte Arrays für unterschiedliche Entity-Typen | `sensors = [...]` und `binary_sensors = [...]` |
+
+**WICHTIG:** Home Assistant MQTT Discovery hat strikte Validierung - Entity-Typ muss zu device_class passen!
+
+**Diagnose:**
+```bash
+# Alle MQTT Discovery Messages anzeigen
+mosquitto_sub -h <broker> -t 'homeassistant/+/+/+/config' -v
+
+# Retained Message löschen
+mosquitto_pub -h <broker> -t "homeassistant/sensor/device/entity/config" -n -r
+```
+
 ### Apt & Package Management (2026-02-05)
 
 | Problem | Detail | Lösung |
