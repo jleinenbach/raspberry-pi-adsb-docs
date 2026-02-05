@@ -36,7 +36,7 @@ Der Raspberry Pi GPS Base Station publiziert Stratum 1 Zeitserver- und NTRIP-Sta
 | **GPS Stratum** | `sensor.gps_stratum` | Chrony Stratum-Level (sollte 1 sein) | - |
 | **GPS PPS Offset** | `sensor.gps_pps_offset` | PPS-Zeitversatz (Sub-Mikrosekunden-Genauigkeit) | Nanosekunden |
 | **GPS Reference** | `sensor.gps_reference` | Referenz-Zeitquelle (sollte PPS sein) | - |
-| **NTRIP Server** | `sensor.ntrip_server` | NTRIP Base Station Status | ON/OFF |
+| **NTRIP Server** | `binary_sensor.ntrip_server` | NTRIP Base Station Status (Connectivity) | ON/OFF |
 
 **Device Name:** ADS-B Feeder GPS Base Station
 **Model:** Waveshare LC29H RTK
@@ -61,8 +61,9 @@ journalctl -u gps-mqtt-publisher -f
 ### MQTT Topics
 
 ```
-homeassistant/sensor/adsb_feeder_gps/+/config   # Discovery (retain)
-gps/adsb_feeder_gps/state                       # State Updates (60s)
+homeassistant/sensor/adsb_feeder_gps/+/config         # Discovery Sensors (retain)
+homeassistant/binary_sensor/adsb_feeder_gps/+/config # Discovery Binary Sensors (retain)
+gps/adsb_feeder_gps/state                             # State Updates (60s)
 ```
 
 ### Beispiel State Payload
@@ -96,7 +97,7 @@ entities:
     name: PPS Offset
   - entity: sensor.gps_reference
     name: Reference Source
-  - entity: sensor.ntrip_server
+  - entity: binary_sensor.ntrip_server
     name: NTRIP Server
 ```
 
@@ -108,7 +109,7 @@ title: GPS Status
 entities:
   - sensor.gps_stratum
   - sensor.gps_pps_offset
-  - sensor.ntrip_server
+  - binary_sensor.ntrip_server
 ```
 
 ---
@@ -304,3 +305,26 @@ gps:
 - GPS RTK Hybrid: `~/docs/GPS-RTK-HYBRID-SETUP.md`
 - DragonSync MQTT: `~/docs/DRAGONSYNC.md` (ähnliches Pattern)
 - Home Assistant MQTT Discovery: https://www.home-assistant.io/integrations/mqtt/#discovery
+
+---
+
+## Troubleshooting
+
+### NTRIP Server zeigt als sensor statt binary_sensor
+
+**Problem:** Home Assistant Error: `'expected SensorDeviceClass or one of...' for dictionary value @ data['device_class']`
+
+**Ursache:** NTRIP Server wurde als `sensor` mit `device_class: 'connectivity'` publiziert, aber `connectivity` ist nur für `binary_sensor` gültig.
+
+**Lösung:**
+```bash
+# Fix in gps-mqtt-publisher (2026-02-05)
+sudo systemctl restart gps-mqtt-publisher
+
+# Alte retained message löschen (falls nötig)
+mosquitto_pub -h 192.168.1.21 \
+  -t "homeassistant/sensor/adsb_feeder_gps/adsb_feeder_gps_ntrip/config" \
+  -n -r
+```
+
+**Status:** ✅ Gefixt in `/usr/local/sbin/gps-mqtt-publisher` (2026-02-05)

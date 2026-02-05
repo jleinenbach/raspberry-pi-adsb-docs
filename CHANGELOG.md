@@ -1,9 +1,46 @@
 # System Changelog
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-04
+**Letzte Aktualisierung:** 2026-02-05
 
 Chronologische Historie aller implementierten System-Änderungen.
+
+---
+
+## 2026-02-05 - MQTT Discovery Fix & Telegram /stats Erweiterung
+
+### Behoben
+- **Home Assistant MQTT Discovery Error**:
+  - Problem: NTRIP Server als `sensor` mit `device_class: 'connectivity'` publiziert
+  - Fehler: `'expected SensorDeviceClass or one of...' for dictionary value @ data['device_class']`
+  - Ursache: `connectivity` ist nur für `binary_sensor` gültig, nicht für `sensor`
+  - Fix: `/usr/local/sbin/gps-mqtt-publisher` refactored
+    - `sensors[]` Array getrennt von `binary_sensors[]` Array
+    - NTRIP Server nach `binary_sensors` verschoben
+    - Discovery Topic geändert: `sensor/...` → `binary_sensor/.../config`
+    - Alte retained MQTT message manuell gelöscht
+  - Resultat: Entity jetzt korrekt als `binary_sensor.ntrip_server` in HA
+  - Dokumentiert in: `~/docs/GPS-HOME-ASSISTANT.md` (Troubleshooting)
+
+### Geändert
+- **Telegram Bot `/stats` Erweiterung**:
+  - OGN-Statistiken erweitert: `/min, /Stunde` → `/min, /h, /12h`
+  - 12h-Wert wird direkt von ogn-decode Status-Seite gelesen (keine Schätzung)
+  - Format: `🪂 Empfangen: 0/min, 0/h, 0/12h`
+  - Datei: `/usr/local/sbin/telegram-bot-daemon`
+
+### Dokumentiert
+- **Apt-Pinning False Positive**:
+  - Problem: Wartung alarmierte "System teilweise auf trixie migriert"
+  - Tatsächlich: Bewusstes Pinning für `ca-certificates` aus trixie
+  - Ursache: Wartungslogik prüfte nur `/etc/apt/sources.list`, nicht Pinning-Config
+  - Lösung: Dokumentation in `~/docs/CLAUDE.md` erweitert
+    - Neue Sektion: "Apt-Pinning: bookworm + trixie Mix (BEABSICHTIGT!)"
+    - Prioritäten erklärt: bookworm=900, trixie=50, ca-certificates=990
+    - Diagnose-Befehle hinzugefügt
+  - Lesson Learned in `~/docs/LESSONS-LEARNED.md` ergänzt
+    - Neue Sektion: "Apt & Package Management (2026-02-05)"
+    - Trixie-Quellen ≠ Migration wenn Pinning konfiguriert ist
 
 ---
 

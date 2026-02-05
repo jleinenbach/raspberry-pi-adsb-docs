@@ -89,6 +89,42 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
 
 ---
 
+## Apt-Pinning: bookworm + trixie Mix (BEABSICHTIGT!)
+
+**⚠️ WICHTIG:** Das System hat trixie-Quellen in `/etc/apt/sources.list`, aber das ist NICHT "teilweise migriert"!
+
+**Status:** ✅ Stabiles Pinning für einzelnes Paket
+
+**Konfiguration:** `/etc/apt/preferences.d/01-cert-pinning`
+```bash
+# Prioritäten
+bookworm:         900  # Standard (hoch)
+trixie:            50  # Ignoriert (niedrig)
+ca-certificates:  990  # Ausnahme (höchste)
+```
+
+**Installierte trixie-Pakete:**
+- `ca-certificates` (20250419) - Einziges Paket aus trixie
+  - **Grund:** Let's Encrypt Root CA Bug in bookworm (20230311)
+  - **Seit:** 2024-10-xx (siehe CHANGELOG.md)
+
+**Prüfung:**
+```bash
+# Pinning-Status
+apt-cache policy | grep -A2 "bookworm\|trixie"
+
+# Trixie-Pakete auflisten (sollte nur ca-certificates sein)
+dpkg -l | awk '/^ii/ {print $2}' | xargs -I {} sh -c \
+  'apt-cache policy {} 2>/dev/null | grep -q "^\*\*\*.*trixie" && echo {}'
+```
+
+**Bei Wartung:**
+- ✅ **Ignoriere Warnungen** über "trixie APT-Quellen"
+- ✅ **Prüfe Pinning-Konfiguration** in `/etc/apt/preferences.d/01-cert-pinning`
+- ❌ **NICHT fragen** ob System zurück zu bookworm migriert werden soll
+
+---
+
 ## 📋 Wartungs-Historie
 
 Siehe `~/docs/MAINTENANCE-HISTORY.md` für:
@@ -114,7 +150,7 @@ Siehe `~/docs/CHANGELOG.md` für vollständige Historie aller implementierten Ä
 | Befehl | Beschreibung |
 |--------|--------------|
 | `/status` | System Health + Drohnen live |
-| `/stats` | Statistiken (ADS-B, OGN/FLARM, Remote ID) |
+| `/stats` | Statistiken (ADS-B: aktuell + seit Start, MLAT, OGN: /min /h /12h, Remote ID: aktuell + 24h) |
 | `/log` | Letzte Wartung |
 | `/do <text>` | Queue-Anweisung (auch bei aktiver Session) |
 | `/wartung` | Volle Wartung (~5min) |

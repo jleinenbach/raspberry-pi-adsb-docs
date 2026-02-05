@@ -239,3 +239,25 @@ Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
 
 **Alternative:** Backup-Batterie ist wartungsfreier und zuverlässiger als AGNSS-Server-Abhängigkeit.
 
+### Apt & Package Management (2026-02-05)
+
+| Problem | Detail | Lösung |
+|---------|--------|--------|
+| **Trixie-Quellen = Migration?** | `/etc/apt/sources.list` mit bookworm + trixie Zeilen | **Prüfe Pinning-Konfiguration** in `/etc/apt/preferences.d/` |
+| **Apt-Pinning übersehen** | Wartung alarmiert "System migriert zu trixie" | **False Positive** - Pinning erzwingt bookworm (Prio 900 > 50) |
+| **ca-certificates aus trixie** | Einziges Paket mit trixie-Version (Prio 990) | **Beabsichtigt** - Let's Encrypt Root CA Bug in bookworm |
+| **Pinning-Diagnose** | Wie prüfen ob Paket aus trixie kommt? | `apt-cache policy <paket>` zeigt Quelle mit `***` |
+| **System-Migrationscheck** | Kernel vs. APT-Quellen inkonsistent? | **Pinning ist nicht Migration** - Prio entscheidet, nicht Quellen-Existenz |
+
+**WICHTIG:** Trixie-Quellen in `sources.list` sind OK wenn `/etc/apt/preferences.d/` Pinning konfiguriert hat!
+
+**Diagnose:**
+```bash
+# Alle trixie-Pakete auflisten (sollte nur ca-certificates sein)
+dpkg -l | awk '/^ii/ {print $2}' | xargs -I {} sh -c \
+  'apt-cache policy {} 2>/dev/null | grep -q "^\*\*\*.*trixie" && echo {}'
+
+# Pinning-Prioritäten prüfen
+apt-cache policy | grep -E "^\s+(500|900|990|50)" | head -20
+```
+
