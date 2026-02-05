@@ -1,7 +1,7 @@
 # Lessons Learned
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-04
+**Letzte Aktualisierung:** 2026-02-05
 
 Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
 
