@@ -352,3 +352,24 @@ fi
 ```
 
 **Root Cause:** Claude Wartungs-Prompt sagt "Lies MAINTENANCE-HISTORY.md", aber Claude liest nur bei explizitem Status-Request, nicht bei täglicher Wartung.
+
+
+### wait_for_quiet: Self-Detection (2026-02-06)
+
+| Problem | Detail | Lösung |
+|---------|--------|--------|
+| **Henne-Ei-Problem** | Wartung wartete 10min auf sich selbst | Self-Detection: Eigenen Service ignorieren |
+| **Type=oneshot** | Service ist "activating" während er läuft | Normal für oneshot, muss ausgefilter werden |
+| **Infinite Loop** | wait_for_quiet() findet sich selbst → wartet → timeout | grep -v "^service-name$" |
+
+**Pattern:**
+```bash
+# Prüfe auf aktivierende Services, aber NICHT dich selbst!
+local activating_services=$(systemctl list-units --state=activating --no-legend --no-pager 2>/dev/null | \
+    awk '{print $1}' | \
+    grep -v "^$(basename $0 .service).service$")
+```
+
+**Wichtig:** Type=oneshot Services sind im "activating" Status während das ExecStart-Skript läuft. Das ist KEIN Fehler!
+
+**Symptom:** Service läuft, aber wait_for_quiet() wartet 10 Minuten auf ihn → Timeout.

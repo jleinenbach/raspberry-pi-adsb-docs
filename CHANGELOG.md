@@ -790,3 +790,43 @@ Der Watchdog erkannte nicht, dass eine Session als "rejected" archiviert wurde. 
 ```
 
 **Status:** ✅ Watchdog erkennt Session-Archivierung als "behandelt"
+
+
+## 2026-02-06 - wait_for_quiet: Fix Henne-Ei-Problem (Wartung wartete auf sich selbst)
+
+### Problem
+Die Wartung wartete **10 Minuten auf sich selbst** (07:02-07:12):
+- `claude-respond.service` ist Type=oneshot
+- Während das Skript läuft: Status = **activating**
+- `wait_for_quiet()` Check 1 prüft auf aktivierende Services
+- Findet: `claude-respond.service` (sich selbst!)
+- Wartet 10 Minuten → Timeout → Startet trotzdem
+
+**Symptom:**
+```
+[07:02:18] ⏳ Warte auf Ruhe (0s/600s): Services starten: claude-respond.service
+[07:02:33] ⏳ Warte auf Ruhe (15s/600s): Services starten: claude-respond.service
+... 40x wiederholt ...
+[07:12:31] ⚠️ Timeout nach 600s - System nicht ruhig, starte trotzdem
+```
+
+### Root Cause
+`wait_for_quiet()` erkannte nicht, dass **claude-respond.service die Wartung selbst ist**.
+
+Type=oneshot Services sind im "activating" Status während sie laufen. Das ist normal, aber die Wartung sollte sich selbst ignorieren.
+
+### Lösung
+`wait_for_quiet()` Check 1 filtert jetzt **claude-respond.service** aus:
+
+```bash
+# Vorher:
+local activating_services=$(systemctl list-units --state=activating ...)
+
+# Nachher:
+local activating_services=$(systemctl list-units --state=activating ... | grep -v "^claude-respond.service$")
+```
+
+### Geändert
+- `/usr/local/sbin/claude-respond-to-reports`: Zeile 73 - Self-Detection
+
+**Effekt:** Wartung startet sofort, keine 10-Minuten-Wartezeit mehr
