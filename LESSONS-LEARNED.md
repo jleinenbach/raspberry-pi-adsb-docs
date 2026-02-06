@@ -329,3 +329,26 @@ fi
 ```
 
 **Wichtig:** Exit 1 bei PENDING-Session ist technisch korrekt (Claude beendete Wartung nicht vollständig), aber kein Fehler-Zustand!
+
+
+### Claude Wartung: Declined Recommendations werden ignoriert (2026-02-06)
+
+| Problem | Detail | Lösung |
+|---------|--------|--------|
+| **Wiederholte Vorschläge** | SSH-7408 wurde 3x vorgeschlagen (2026-01-18, 2026-01-30, 2026-02-06) | Declined-Liste besser prüfen |
+| **MAINTENANCE-HISTORY.md** | Declined Recommendations nicht erkannt | Vor Vorschlag prüfen: `grep -i "keyword" MAINTENANCE-HISTORY.md` |
+| **User-Frustration** | "Das hatten wir übrigens schon einmal!" | System-Prompts verstärken |
+
+**Wichtig:** IMMER MAINTENANCE-HISTORY.md prüfen BEVOR User-Rückfragen gestellt werden!
+
+**Pattern:**
+```bash
+# Vor Lynis-Vorschlag IMMER prüfen
+SUGGESTION="SSH-7408"
+if grep -qi "$SUGGESTION" ~/docs/MAINTENANCE-HISTORY.md; then
+    echo "Bereits abgelehnt, überspringen"
+    exit 0
+fi
+```
+
+**Root Cause:** Claude Wartungs-Prompt sagt "Lies MAINTENANCE-HISTORY.md", aber Claude liest nur bei explizitem Status-Request, nicht bei täglicher Wartung.

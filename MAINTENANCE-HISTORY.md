@@ -26,6 +26,7 @@ Dokumentation von abgelehnten und ausstehenden Wartungsempfehlungen.
 | 2026-01-25 | ACCT-9628: auditd | Ressourcenintensiv für Pi |
 | 2026-01-25 | CONT-8104: Docker Warnings | ARM-spezifisch, nicht änderbar |
 | 2026-01-30 | SSH-7408: MaxSessions/TCPKeepAlive | Schränkt SSH-Client-Funktionalität ein |
+| 2026-02-06 | SSH-7408: ERNEUT vorgeschlagen | **3. Ablehnung** - Bereits 2x abgelehnt, Claude ignoriert Declined-Liste |
 | 2026-01-31 | BOOT-5264: systemd-analyze security | Zu umfangreich für laufende Wartung (21 Services) |
 | 2026-01-31 | PROC-3614: Check IO processes | Keine IO-wartenden Prozesse gefunden |
 | 2026-01-31 | FIRE-4513: iptables unused rules | Nur Docker-Regeln, alle ungenutzt (0 pkts = OK) |
