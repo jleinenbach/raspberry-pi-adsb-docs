@@ -305,3 +305,27 @@ Subscriber (CONNECT tcp://host:4224)
 Subscriber (CONNECT tcp://host:4224)
 ```
 
+
+
+### Wartungs-Watchdog False-Positives (2026-02-06)
+
+| Problem | Detail | Lösung |
+|---------|--------|--------|
+| **Exit 1 != Fehler** | Claude CLI gibt Exit 1 bei PENDING-Session | Prüfe Session-State BEVOR Diagnose |
+| **PENDING-Session** | User-Rückfrage ohne sofortige Antwort | Exit 1 mit `waiting_for_answer` = OK |
+| **Diagnose-Fehlalarm** | Watchdog startet unnötige Diagnose-Claude | Session-File `/var/lib/claude-pending/session.json` prüfen |
+
+**Pattern:**
+```bash
+# PENDING-Session prüfen BEVOR Exit 1 als Fehler behandelt wird
+if [ -f "$session_file" ]; then
+    session_state=$(jq -r ".state" "$session_file")
+    if [ "$session_state" = "waiting_for_answer" ]; then
+        # Exit 1 ist OK - Claude wartet auf User
+        return 0
+    fi
+fi
+# Kein PENDING → Exit 1 ist echter Fehler
+```
+
+**Wichtig:** Exit 1 bei PENDING-Session ist technisch korrekt (Claude beendete Wartung nicht vollständig), aber kein Fehler-Zustand!

@@ -1,10 +1,58 @@
 # System Changelog
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-05
+**Letzte Aktualisierung:** 2026-02-06
 
 Chronologische Historie aller implementierten System-Änderungen.
 
+
+## 2026-02-06 - Wartungs-Watchdog: Fix False-Positive bei PENDING-Sessions
+
+### Problem
+Der Wartungs-Watchdog (`/usr/local/sbin/wartungs-watchdog`) behandelte **alle Exit-Codes != 0** als Fehler, aber Claude CLI gibt **Exit 1 zurück wenn eine PENDING-Session erstellt wird** (User-Rückfrage ohne sofortige Antwort).
+
+**Symptom:**
+- Claude-Wartung stellt User-Frage via `telegram-ask`
+- User antwortet nicht innerhalb 2 Minuten → PENDING-Session erstellt
+- Claude beendet sich korrekt mit "[TELEGRAM:OK] Wartung pausiert..."
+- **Aber**: Claude CLI gibt Exit 1 zurück (technisch korrekt für "nicht vollständig abgeschlossen")
+- Watchdog erkennt "Exit 1" im Log und startet Diagnose-Claude
+- Telegram-Alarm: "Wartung reagiert nicht mehr - Diagnose fehlgeschlagen (Exit 1)"
+
+**Root Cause:**
+PENDING-Sessions sind ein **normaler Zustand** (Wartung pausiert auf User-Antwort), aber Watchdog behandelte sie als Fehler.
+
+### Lösung
+`check_recent_errors()` in wartungs-watchdog erweitert:
+```bash
+# WICHTIG: Exit 1 mit PENDING-Session ist KEIN Fehler!
+# Claude pausiert auf User-Antwort → normaler Zustand
+local session_file="/var/lib/claude-pending/session.json"
+if [ -f "$session_file" ]; then
+    local session_state=$(jq -r ".state" "$session_file" 2>/dev/null)
+    if [ "$session_state" = "waiting_for_answer" ]; then
+        log "INFO: Exit 1 mit PENDING-Session (waiting_for_answer) → OK, kein Fehler"
+        return 1  # Kein Fehler - Wartung pausiert auf User
+    fi
+fi
+```
+
+**Verhalten jetzt:**
+- Exit 1 **MIT** PENDING-Session → OK, keine Diagnose
+- Exit 1 **OHNE** PENDING-Session → Fehler, Diagnose startet
+
+### Geändert
+- `/usr/local/sbin/wartungs-watchdog`: PENDING-Session-Handling in `check_recent_errors()`
+
+### Dokumentiert
+- LESSONS-LEARNED.md: Entry geplant für Wartungs-Watchdog False-Positives
+
+**Test-Fall (2026-02-06):**
+- Session 1770358592: SSH-Härtung Frage (noch aktiv, läuft bis 2026-02-07 07:16)
+- Exit 1 wurde korrekt als PENDING erkannt → Keine Fehlalarm mehr
+
+
+---
 
 ## 2026-02-06 - zmq-decoder Architecture Analysis & New Governance Rules
 
