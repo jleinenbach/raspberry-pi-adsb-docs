@@ -759,3 +759,34 @@ curl http://adsb-feeder.internal/tar1090/
 ```
 
 ---
+
+
+## 2026-02-06 - Wartungs-Watchdog: Fix Timing-Issue bei Session-Archivierung
+
+### Problem
+Nach Archivierung einer PENDING-Session löste der Watchdog fälschlicherweise eine Diagnose aus:
+1. 08:02: Watchdog prüft → "Exit 1 mit PENDING-Session → OK" ✅
+2. 08:08: Session wird als ABGELEHNT archiviert (durch User-Entscheidung)
+3. 08:12: Watchdog prüft erneut → Sieht alten "[FEHLER] Exit 1" von 07:30 → Session existiert NICHT mehr → Denkt es ist neuer Fehler → Startet Diagnose
+
+**Root Cause:**
+Der Watchdog erkannte nicht, dass eine Session als "rejected" archiviert wurde. Die `check_recent_errors()` Funktion prüfte nur auf "Korrektur abgeschlossen|behoben|GEFIXT", aber nicht auf Session-Archivierung.
+
+### Lösung
+1. **Log-Markierung:** "Korrektur abgeschlossen: SSH-Härtung 3x abgelehnt" ins Wartungslog geschrieben
+2. **Watchdog erweitert:** `check_recent_errors()` erkennt jetzt auch:
+   - `SESSION.*BEHANDELT`
+   - `archiviert`
+   - `Session.*rejected`
+
+### Geändert
+- `/usr/local/sbin/wartungs-watchdog`: Erweiterte behandelt-Keywords (Zeile 145)
+
+**Test:**
+```bash
+✓ Fehler gefunden im Log
+✓ Fehler wurde behandelt (erkannt)
+→ Watchdog wird KEINE Diagnose starten
+```
+
+**Status:** ✅ Watchdog erkennt Session-Archivierung als "behandelt"
