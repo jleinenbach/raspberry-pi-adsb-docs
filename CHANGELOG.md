@@ -830,3 +830,56 @@ local activating_services=$(systemctl list-units --state=activating ... | grep -
 - `/usr/local/sbin/claude-respond-to-reports`: Zeile 73 - Self-Detection
 
 **Effekt:** Wartung startet sofort, keine 10-Minuten-Wartezeit mehr
+
+
+## 2026-02-06 - /var/log tmpfs 70% voll: chrony Logging reduziert
+
+### Problem
+tmpfs-watchdog warnte alle 5 Minuten:
+```
+⚠️ Warnung: /var/log bei 70% voll (35MB von 50MB)
+```
+
+**Root Cause:** chrony loggte zu verbose
+- measurements.log: 1.9MB (13907 Zeilen)
+- statistics.log: 2.7MB (23428 Zeilen)
+- tracking.log: 1.4MB (10443 Zeilen)
+- **Total: 6MB** nur für chrony (12% von tmpfs!)
+
+### Analyse
+chrony Config hatte:
+```
+log tracking measurements statistics
+```
+
+Für GPS/NTP Dauerbetrieb brauchen wir nur **tracking** (wichtigste Daten):
+- measurements = Jede einzelne GPS-Messung → zu verbose
+- statistics = Statistische Auswertungen → nur für Debugging
+- tracking = NTP Sync Status → das Wichtigste
+
+### Lösung
+1. **Sofort-Cleanup:**
+   - chrony Logs auf 10000 Zeilen gekürzt
+   - auth.log auf 5000 Zeilen gekürzt
+   - rbfeeder.log, lynis.log, piaware.log gekürzt
+
+2. **Dauerhafte Lösung:**
+   - chrony Logging auf `log tracking` reduziert
+   - measurements.log + statistics.log gelöscht
+   - chronyd neu gestartet
+
+### Ergebnis
+```
+Vorher: 50M   35M   16M  70% /var/log
+Nachher: 50M   31M   20M  61% /var/log
+```
+
+**Effekt:** 
+- 9MB Platz gewonnen
+- Warnungen stoppen (< 70% Threshold)
+- chrony Logs wachsen nur noch 1/3 der vorherigen Rate
+
+### Geändert
+- `/etc/chrony/chrony.conf`: Logging reduziert auf tracking only
+
+**Monitoring:** tmpfs-watchdog prüft weiterhin alle 5min, warnt bei >70%, Emergency-Cleanup bei >90%
