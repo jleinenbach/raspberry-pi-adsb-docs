@@ -394,7 +394,207 @@ vcgencmd get_throttled
 
 ---
 
+---
 
+## 🏗️ Architekturentscheidungen (2026-02-06)
+
+**KRITISCHE REGEL:** Architekturentscheidungen erfordern **Deep Dive Analyse** und **vollständige Transparenz**.
+
+### Definitionen
+
+**Architekturentscheidung = Änderung die Systemkomponenten entfernt/ersetzt/umbaut**
+
+**Beispiele:**
+- Service deaktivieren/löschen
+- Komponenten zusammenführen (z.B. zmq-decoder entfernen, atoms3-proxy erweitern)
+- Protokoll-/Port-Änderungen
+- Datenfluss umrouten
+
+**KEINE Architekturentscheidungen:**
+- Service neustarten
+- Config-Parameter anpassen (ohne Komponentenwechsel)
+- Security-Patches
+- Dependency-Updates
+
+### Pflicht-Prozedur bei Architekturentscheidungen
+
+#### 1. Deep Dive (IMMER ZUERST!)
+
+```bash
+# a) Verstehe die Komponente
+- Was macht sie GENAU? (Code lesen!)
+- Welche Abhängigkeiten hat sie?
+- Wer konsumiert ihre Ausgabe?
+
+# b) Verstehe das Problem
+- Warum crashed/failed sie?
+- Logs prüfen (journalctl -u SERVICE --since "7 days ago")
+- Port-Konflikte? (ss -tlnp | grep PORT)
+- Dependencies missing?
+
+# c) Verstehe Alternativen
+- Gibt es andere Komponenten die das gleiche tun?
+- Was können Alternativen MEHR?
+- Was können Alternativen WENIGER?
+- Funktioniert das System ohne die Komponente?
+
+# d) Verstehe Auswirkungen
+- Welche Services hängen davon ab?
+- Gibt es Monitoring das auf die Komponente zeigt?
+- Dokumentation veraltet?
+```
+
+#### 2. Eskalations-Leiter (PFLICHT!)
+
+**Level 1: Restart**
+- systemctl restart SERVICE
+- Versuche 3x mit Delay
+
+**Level 2: Repair**
+- Config-Fehler beheben
+- Dependencies installieren
+- Permissions fixen
+
+**Level 3: Watchdog-Eskalation**
+- Feeder-Watchdog versucht 6x über 5h
+- Exponentielles Backoff
+- Automatische Telegram-Benachrichtigung
+
+**Level 4: Claude Deep Dive** (erst hier!)
+- Tiefe Analyse des Problems
+- Alternativen prüfen
+- **User-Rückfrage bei Architekturänderung**
+
+**Level 5: Architekturentscheidung** (nur mit Genehmigung!)
+- Vollständige Dokumentation erstellen
+- Rollback-Plan vorbereiten
+- Telegram-Erklärung senden
+- Änderung durchführen
+- Dokumentation aktualisieren
+
+#### 3. User-Kommunikation (PFLICHT!)
+
+**VOR der Änderung via Telegram:**
+```
+🏗️ ARCHITEKTURENTSCHEIDUNG ERFORDERLICH
+
+Problem:
+[Service] crashed seit [Zeitraum]
+
+Analyse:
+[Deep Dive Zusammenfassung in 3-5 Sätzen]
+
+Vorschlag:
+[Service] entfernen, weil [Begründung]
+
+Alternative löst das gleich durch:
+[Technische Erklärung]
+
+Was verlieren wir:
+[Features die wegfallen, oder "Nichts"]
+
+Rollback:
+[Wie rückgängig machen]
+
+Genehmigen? (J/N)
+```
+
+**NACH der Änderung (bei Genehmigung):**
+```
+✅ Architekturänderung durchgeführt
+
+[Service] entfernt
+[Alternative] übernimmt Aufgaben
+System läuft stabil
+
+Dokumentiert in:
+- CLAUDE.md: [Sektion]
+- CHANGELOG.md: [Eintrag]
+
+Rollback-Befehl:
+[Genauer Befehl zum Rückgängig machen]
+```
+
+#### 4. Dokumentation (PFLICHT!)
+
+**Sofort nach Änderung:**
+
+1. **CHANGELOG.md:**
+```markdown
+## 2026-02-XX - [Service] Architecture Change
+
+### Entfernt
+- **[Service]**: [Grund]
+  - Problem: [Was war kaputt]
+  - Analyse: [Deep Dive Zusammenfassung]
+  - Alternative: [Was ersetzt es]
+  - Migration: [Was geändert wurde]
+
+### Geändert  
+- **[Alternative Service]**: Erweitert um [Features]
+```
+
+2. **CLAUDE.md:**
+- Service aus Überwachungslisten entfernen
+- Architektur-Diagramme aktualisieren
+- Rollback-Prozedur hinzufügen
+
+3. **Rollback-Skript:**
+```bash
+# /usr/local/sbin/rollback-[service].sh
+# Created: 2026-02-XX
+# Restores [service] architecture
+systemctl enable [service]
+systemctl start [service]
+# ... weitere Schritte
+```
+
+#### 5. Rollback-Fähigkeit (PFLICHT!)
+
+**Jede Architekturänderung MUSS rückgängig machbar sein!**
+
+```bash
+# a) Config-Backup
+cp /etc/systemd/system/[service].service \
+   /etc/systemd/system/[service].service.backup-$(date +%Y%m%d)
+
+# b) Service nicht löschen, nur disablen!
+systemctl disable [service]
+mv /etc/systemd/system/[service].service \
+   /etc/systemd/system/[service].service.disabled
+
+# c) Dokumentiere Rollback
+echo "systemctl enable [service] && systemctl start [service]" \
+  > /usr/local/sbin/rollback-[service].sh
+chmod +x /usr/local/sbin/rollback-[service].sh
+```
+
+### Verboten ohne User-Genehmigung
+
+❌ **Service/Komponente löschen**
+❌ **Config-Dateien löschen** (nur umbenennen zu `.disabled`)
+❌ **Datenfluss umrouten** (ohne Analyse)
+❌ **Ports ändern** (Port-Konflikte erst beheben!)
+❌ **Dependencies entfernen** (könnte andere Services brechen)
+
+### Beispiel: zmq-decoder Entfernung (2026-02-06)
+
+**❌ Was falsch lief:**
+1. Keine Deep Dive Analyse kommuniziert
+2. Keine User-Rückfrage vor Architekturänderung
+3. Keine Telegram-Erklärung gesendet
+4. Keine Dokumentation erstellt
+5. Kein Rollback-Plan
+
+**✅ Was hätte passieren sollen:**
+1. Deep Dive: zmq-decoder Port-Konflikt mit atoms3-proxy (beide Port 4224)
+2. Analyse: atoms3-proxy hat alle Features die zmq-decoder braucht
+3. Telegram-Frage: "zmq-decoder entfernen? Port-Konflikt, atoms3-proxy reicht."
+4. Nach Genehmigung: Service auf `.disabled` umbenennen
+5. Dokumentation: CHANGELOG + CLAUDE.md Update
+6. Rollback-Skript: `/usr/local/sbin/rollback-zmq-decoder.sh`
+
+---
 ---
 
 ## 🔄 Koordination zwischen Reparatur-Mechanismen

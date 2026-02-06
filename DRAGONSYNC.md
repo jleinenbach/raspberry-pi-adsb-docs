@@ -11,7 +11,8 @@ DragonSync erkennt Drohnen via **WiFi/Bluetooth Remote ID** (EU-Pflicht seit 202
 │                        AtomS3 (ESP32-S3)                                    │
 │  - Empfängt WiFi Beacon + Bluetooth LE Remote ID                           │
 │  - Dual-Core: Core0=WiFi, Core1=Bluetooth                                  │
-│  - Sendet JSON über USB-Serial (115200 baud)                               │
+│  - Dekodiert OpenDroneID (ASTM F3411)                                      │
+│  - Sendet dekodierte JSON über USB-Serial (115200 baud)                    │
 └───────────────────────────────────┬─────────────────────────────────────────┘
                                     │ USB (/dev/remoteid)
                                     ▼
@@ -19,9 +20,9 @@ DragonSync erkennt Drohnen via **WiFi/Bluetooth Remote ID** (EU-Pflicht seit 202
 │                        Raspberry Pi                                          │
 │                                                                              │
 │  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────────┐   │
-│  │  zmq-decoder    │────▶│   DragonSync    │────▶│  Home Assistant     │   │
+│  │  atoms3-proxy   │────▶│   DragonSync    │────▶│  Home Assistant     │   │
 │  │  (Serial→ZMQ)   │     │   (Gateway)     │     │  (MQTT Discovery)   │   │
-│  │  Port 4224      │     │  Port 8088 API  │     │  192.168.1.21:1883  │   │
+│  │  Port 4224/4225 │     │  Port 8088 API  │     │  192.168.1.21:1883  │   │
 │  └─────────────────┘     └─────────────────┘     └─────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -73,7 +74,6 @@ DragonSync erkennt Drohnen via **WiFi/Bluetooth Remote ID** (EU-Pflicht seit 202
 | `/home/pi/DragonSync/gps.ini` | Statische GPS-Position |
 | `/home/pi/DroneID/` | ZMQ-Decoder + OpenDroneID |
 | `/etc/systemd/system/dragonsync.service` | DragonSync Service |
-| `/etc/systemd/system/zmq-decoder.service` | ZMQ-Decoder Service |
 | `/etc/udev/rules.d/99-remoteid.rules` | USB-Geräteerkennung |
 
 ## Services
@@ -89,7 +89,6 @@ sudo systemctl restart dragonsync
 journalctl -u dragonsync -f
 ```
 
-### zmq-decoder.service
 - **Startet automatisch** wenn AtomS3 angeschlossen wird
 - Liest Serial-Daten vom ESP32
 - Sendet an ZMQ Port 4224
@@ -216,7 +215,7 @@ Wrote 1497600 bytes ... Hash of data verified.
 ls -la /dev/remoteid
 
 # Services should auto-start
-systemctl status zmq-decoder dragonsync
+systemctl status atoms3-proxy dragonsync
 
 # Test API
 curl -s http://localhost:8088/drones | python3 -m json.tool
@@ -337,7 +336,6 @@ fpv_zmq_port = 4226
 | Problem | Lösung |
 |---------|--------|
 | `/dev/remoteid` fehlt | udev-Regel prüfen, USB-IDs checken |
-| zmq-decoder startet nicht | `journalctl -u zmq-decoder -xe` |
 | Keine Drohnen in HA | MQTT-Verbindung prüfen, Drohne in Reichweite? |
 | DragonSync crash | `journalctl -u dragonsync -xe`, config.ini prüfen |
 

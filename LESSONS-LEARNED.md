@@ -282,3 +282,26 @@ dpkg -l | awk '/^ii/ {print $2}' | xargs -I {} sh -c \
 apt-cache policy | grep -E "^\s+(500|900|990|50)" | head -20
 ```
 
+
+### ZMQ & Message Queues (2026-02-06)
+
+| Problem | Detail | Lösung |
+|---------|--------|--------|
+| **ZMQ Port-Konflikt** | Zwei Prozesse versuchen gleichen Port zu binden | **NUR EIN** Publisher pro Port (XPUB/PUB) |
+| **--zmqsetting vs --zmqclients** | `--zmqsetting` = Server (BIND), `--zmqclients` = Client (CONNECT) | Parameter-Bedeutung IMMER prüfen |
+| **Service Config Validierung** | Service startet nie (inactive), keine Logs | `systemctl status` zeigt nicht WARUM - `journalctl -u` prüfen |
+| **Dekodierung: ESP32 vs Server** | Wo dekodieren? | **ESP32** effizienter - Server nur Routing |
+| **Multi-Source unnötig** | zmq-decoder kann viele Quellen - brauchen wir nicht | **KISS** - nur nötige Features implementieren |
+| **Architekturentscheidung ohne Analyse** | Service entfernt ohne Deep Dive/User-Frage | **5-Level Eskalation** immer befolgen |
+
+**Wichtig:** ZMQ Publisher (PUB/XPUB) kann NUR EINMAL pro Port binden. Subscriber (SUB) können viele sein!
+
+**Pattern:**
+```
+Publisher (BIND tcp://*:4224) ← Kann nur 1x pro Port existieren
+    ↓
+Subscriber (CONNECT tcp://host:4224) ← Beliebig viele möglich
+Subscriber (CONNECT tcp://host:4224)
+Subscriber (CONNECT tcp://host:4224)
+```
+

@@ -5,7 +5,48 @@
 
 Chronologische Historie aller implementierten System-Änderungen.
 
+
+## 2026-02-06 - zmq-decoder Architecture Analysis & New Governance Rules
+
+### Analysiert
+- **zmq-decoder Entfernung (retrospektiv)**:
+  - Problem: Service war nie aktiv (inactive seit 02.02, disabled)
+  - Ursache: PORT-KONFLIKT mit atoms3-proxy (beide Port 4224)
+  - Service-Config war fehlerhaft: `--zmqsetting localhost:4224` ohne `--zmqclients`
+  - zmq-decoder hätte subscriben sollen, aber versuchte zu publizieren
+  - Watchdog-Eskalation am 03.02 nach 6 Versuchen (~5h)
+  - Wartung entfernte Service am 06.02 ohne Analyse/User-Rückfrage
+
+### Entfernt
+- **zmq-decoder.service**: Redundant und fehlkonfiguriert
+  - Problem: Port-Konflikt mit atoms3-proxy
+  - Alternative: atoms3-proxy hat alle benötigten Features
+  - ESP32-Firmware dekodiert bereits OpenDroneID → zmq-decoder unnötig
+  - Multi-Source/DJI/externe ZMQ-Clients nicht benötigt
+
+### Behalten
+- **atoms3-proxy**: Einziger Serial Reader für AtomS3
+  - Einfaches Routing: remoteid → Port 4224, probe → Port 4225
+  - Production-Features: Backoff, Logging, Signal Handling
+  - Läuft stabil seit 04.02 (2+ Tage)
+
+### Neu: Governance Rules für Architekturentscheidungen
+- **CLAUDE.md**: Neue Sektion "🏗️ Architekturentscheidungen"
+  - 5-Level Eskalations-Leiter (Restart → Repair → Watchdog → Deep Dive → Architecture)
+  - Pflicht: Deep Dive Analyse BEVOR Komponenten entfernt werden
+  - Pflicht: User-Rückfrage via Telegram mit vollständiger Erklärung
+  - Pflicht: Rollback-Fähigkeit (Service auf `.disabled`, nie löschen!)
+  - Pflicht: Dokumentation (CHANGELOG + CLAUDE.md + Rollback-Skript)
+  - Verboten: Services löschen, Configs löschen, Datenfluss ohne Analyse ändern
+
+### Dokumentiert
+- **DRAGONSYNC.md**: Architektur-Diagramm korrigiert (zmq-decoder entfernt)
+- **CLAUDE.md**: atoms3-proxy bleibt single Serial Reader
+- **LESSONS-LEARNED.md**: ZMQ Patterns, Port-Konflikte, Service-Validierung
+
+
 ---
+
 
 ## 2026-02-05 - MQTT Discovery Fix & Telegram /stats Erweiterung
 
