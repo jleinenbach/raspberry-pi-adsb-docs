@@ -930,3 +930,41 @@ Problem: Kann **false positives** geben, reagiert auf systemd Warnungen die nich
 - `/usr/local/sbin/claude-respond-to-reports`: Check 7+8 entfernt
 
 **Effekt:** Wartung startet sofort, keine 10-Minuten-Wartezeiten mehr wegen Skript-Änderungen
+
+
+## 2026-02-07 - Wartungs-Prompt: Telegram-Redundanz vermeiden
+
+### Problem
+Claude sendete **zwei Telegram-Nachrichten**:
+1. **07:28** - Lange Nachricht via `telegram-notify` (während Wartung)
+2. **07:29** - Kurze Nachricht via `[TELEGRAM:OK]` (am Ende)
+
+**Root Cause:** Prompt war unklar
+- Erlaubte telegram-notify für "Nachrichten ohne Rückfrage"
+- Forderte [TELEGRAM:OK] am Ende
+- Claude nutzte BEIDES → Redundante Nachrichten
+
+### Lösung
+Prompt klargestellt (Zeilen 676-680):
+
+**Vorher:**
+```
+Für Nachrichten ohne Rückfrage:
+  /usr/local/sbin/telegram-notify "Info-Nachricht"
+  /usr/local/sbin/telegram-notify --success "Erfolg"
+  /usr/local/sbin/telegram-notify --error "Fehler"
+```
+
+**Nachher:**
+```
+Für Zwischenmeldungen (SELTEN nutzen, nur bei langen Operationen):
+  /usr/local/sbin/telegram-notify "Info-Nachricht"  # Nur für lange Updates
+
+WICHTIG: Nutze telegram-notify nur für ZWISCHENMELDUNGEN bei langen Operationen!
+Die FINALE Wartungszusammenfassung MUSS via [TELEGRAM:OK] am Ende erfolgen.
+```
+
+### Geändert
+- `/usr/local/sbin/claude-respond-to-reports`: Prompt-Klarstellung (Zeilen 676-680)
+
+**Effekt:** Claude wird nur noch EINE Telegram-Nachricht senden ([TELEGRAM:OK] am Ende), keine redundanten Zwischenmeldungen mehr
