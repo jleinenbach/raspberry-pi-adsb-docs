@@ -1,7 +1,7 @@
 # Lessons Learned
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-05
+**Letzte Aktualisierung:** 2026-02-07
 
 Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
 
@@ -373,3 +373,46 @@ local activating_services=$(systemctl list-units --state=activating --no-legend 
 **Wichtig:** Type=oneshot Services sind im "activating" Status während das ExecStart-Skript läuft. Das ist KEIN Fehler!
 
 **Symptom:** Service läuft, aber wait_for_quiet() wartet 10 Minuten auf ihn → Timeout.
+
+---
+
+### Monitoring & Netzwerk-Check (2026-02-07)
+
+| Problem | Detail | Lösung |
+|---------|--------|--------|
+| **Single-Ping False Positives** | Ein verlorenes Paket = "offline" | Multi-Host Multi-Ping Check |
+| **Paket-Verlust ist normal** | 1-2% Paket-Verlust kommt vor | Nur fehlschlagen wenn ALLE Hosts unerreichbar |
+| **DNS-Server überlastet** | Temporäre Probleme bei 8.8.8.8 | Mehrere DNS-Server testen (8.8.8.8, 1.1.1.1) |
+| **Gateway vs Internet** | Internet offline ≠ LAN offline | Auch Gateway (192.168.1.1) testen |
+| **Sofort-Alarm ungünstig** | Erste Warnung kann Ausrutscher sein | Warnung erst ab 2. konsekutivem Fehler |
+| **Paradoxe Telegram-Nachricht** | "Netzwerk offline" via Telegram gesendet | Beweist dass Check zu strikt ist |
+
+**Robuster Netzwerk-Check Pattern:**
+```bash
+check_network() {
+    local hosts=(
+        "8.8.8.8"      # Google DNS (Internet)
+        "1.1.1.1"      # Cloudflare DNS (Internet)
+        "192.168.1.1"  # Gateway (LAN)
+    )
+
+    # Teste jeden Host mit 2 Pings, 3s Timeout
+    for host in "${hosts[@]}"; do
+        if ping -c 2 -W 3 "$host" &>/dev/null; then
+            # Mindestens ein Host erreichbar = Netzwerk OK
+            return 0
+        fi
+    done
+
+    # ALLE Hosts fehlgeschlagen = offline
+    return 1
+}
+```
+
+**Wichtig:**
+- **Multi-Host:** Mehrere Ziele (Internet + LAN) für Robustheit
+- **Multi-Ping:** 2 Pings pro Host reduziert Paket-Verlust-Effekt
+- **Fail-Safe:** Nur wenn ALLE Hosts fehlschlagen = offline
+- **Toleranz:** Warnung erst ab 2. konsekutivem Fehler (nicht beim ersten!)
+
+**Effekt:** ✅ Keine False-Positives bei temporären Netzwerk-Aussetzern

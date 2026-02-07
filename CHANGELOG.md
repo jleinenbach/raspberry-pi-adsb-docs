@@ -1,10 +1,73 @@
 # System Changelog
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-06
+**Letzte Aktualisierung:** 2026-02-07
 
 Chronologische Historie aller implementierten System-Änderungen.
 
+
+## 2026-02-07 - Feeder-Watchdog: Robuster Netzwerk-Check
+
+### Problem
+Der Netzwerk-Check in `/usr/local/sbin/feeder-watchdog` war zu strikt und verursachte **False Positives**:
+- Nur ein einzelner Ping zu 8.8.8.8
+- Ein verlorenes Paket = "Netzwerk offline"
+- Telegram-Warnung schon beim **ersten Fehler**
+
+**Paradox:** Watchdog sendete Telegram-Nachricht über das "offline"-Netzwerk.
+
+### Root Cause
+Einzelner Ping zu einzelnem Host ist nicht robust genug:
+- Paket-Verlust (1-2%) ist normal
+- DNS-Server kann temporär überlastet sein
+- Routing-Probleme zu einem Host ≠ komplett offline
+
+### Lösung
+Multi-Host Multi-Ping Check:
+
+```bash
+check_network() {
+    local hosts=(
+        "8.8.8.8"      # Google DNS (Internet)
+        "1.1.1.1"      # Cloudflare DNS (Internet)
+        "192.168.1.1"  # Gateway (LAN)
+    )
+
+    # 2 Pings pro Host, 3s Timeout
+    for host in "${hosts[@]}"; do
+        if ping -c 2 -W 3 "$host" &>/dev/null; then
+            # Mindestens ein Host erreichbar = OK
+            return 0
+        fi
+    done
+
+    # ALLE Hosts fehlgeschlagen = offline
+    # Warnung erst ab 2. Fehler (toleriert einzelne Ausrutscher)
+}
+```
+
+**Verbesserungen:**
+1. **Multi-Host:** 3 verschiedene Ziele (Internet + LAN)
+2. **Multi-Ping:** 2 Pings pro Host (reduziert Paket-Verlust-Effekt)
+3. **Fail-Safe:** Nur wenn ALLE Hosts fehlschlagen = offline
+4. **Toleranz:** Warnung erst ab 2. konsekutivem Fehler
+
+### Test
+```bash
+# Vor der Änderung:
+Teste 8.8.8.8: ✗ nicht erreichbar (1 Ping verloren)
+→ Netzwerk offline (False Positive!)
+
+# Nach der Änderung:
+Teste 8.8.8.8: ✓ erreichbar (2 von 2 Pings)
+→ Netzwerk OK (bricht ab, testet 1.1.1.1 nicht mehr)
+```
+
+### Dateien
+- `/usr/local/sbin/feeder-watchdog` - `check_network()` Zeile 305-357
+- Backup: `/usr/local/sbin/feeder-watchdog.backup-before-network-fix`
+
+---
 
 ## 2026-02-06 - Wartungs-Watchdog: Fix False-Positive bei PENDING-Sessions
 
