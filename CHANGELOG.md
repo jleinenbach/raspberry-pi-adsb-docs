@@ -883,3 +883,50 @@ Nachher: 50M   31M   20M  61% /var/log
 - `/etc/chrony/chrony.conf`: Logging reduziert auf tracking only
 
 **Monitoring:** tmpfs-watchdog prüft weiterhin alle 5min, warnt bei >70%, Emergency-Cleanup bei >90%
+
+
+## 2026-02-07 - wait_for_quiet: Check 7+8 entfernt (zu aggressiv)
+
+### Problem
+Wartung wartete **wieder 10 Minuten** (07:13-07:24):
+```
+[07:13:53] ⏳ Warte auf Ruhe (0s/600s): systemd daemon-reload nötig
+... 40x wiederholt ...
+[07:24:06] ⚠️ Timeout nach 600s
+```
+
+**Root Cause:** Check 7 + Check 8 zu aggressiv
+
+**Check 7:**
+```bash
+find /etc/systemd/system/ /usr/local/sbin/ -type f -mmin -10
+```
+Problem: Prüft auch `/usr/local/sbin/` - aber das sind **Skripte**, keine Unit-Files!  
+Skript-Änderungen brauchen **kein daemon-reload**.
+
+Gestern: Mehrere Skripte geändert (wartungs-watchdog, claude-respond-to-reports, chrony.conf)  
+→ Check 7 triggerte → Check 8 dachte daemon-reload nötig → 10min Wartezeit
+
+**Check 8:**
+```bash
+systemctl status | grep -q "warning.*unit files"
+```
+Problem: Kann **false positives** geben, reagiert auf systemd Warnungen die nicht relevant sind.
+
+### Lösung
+**Beide Checks entfernt** (Zeilen 155-164)
+
+`wait_for_quiet()` prüft jetzt nur noch auf **wirklich kritische** Aktivitäten:
+1. ✅ Services im activating Status (außer sich selbst)
+2. ✅ Watchdog aktiv (letzte 2min)
+3. ✅ Watchdog-Eskalationen
+4. ✅ Service-Restarts (letzte 30s)
+5. ✅ Andere Claude-Instanz läuft
+6. ✅ /do Queue Worker läuft
+7. ❌ ~~Service-Configs geändert~~ (zu aggressiv)
+8. ❌ ~~systemd daemon-reload nötig~~ (false positives)
+
+### Geändert
+- `/usr/local/sbin/claude-respond-to-reports`: Check 7+8 entfernt
+
+**Effekt:** Wartung startet sofort, keine 10-Minuten-Wartezeiten mehr wegen Skript-Änderungen
