@@ -1,10 +1,213 @@
 # System Changelog
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-07
+**Letzte Aktualisierung:** 2026-02-08
 
 Chronologische Historie aller implementierten System-Änderungen.
 
+## 2026-02-08 - KRITISCH: PENDING-Session Bug - User-Antworten wurden ignoriert
+
+### Problem: 2 Stunden Totenstille nach User-Antwort
+
+**Symptome:**
+- User antwortete innerhalb 24h-Frist auf readsb-Update-Frage
+- Bot bestätigte: "✅ Antwort erhalten, wird validiert..."
+- **Dann passierte 2 Stunden NICHTS!**
+- /var/log lief auf 70% voll (Kollateralschaden)
+- User erhielt erst dann Alarm
+
+**Root Cause:** Fundamentaler Design-Bug im PENDING-Session-Workflow:
+
+```
+1. Wartung erstellt PENDING-Session (state="waiting_for_answer")
+2. User antwortet via Telegram Bot
+3. Bot schreibt Antwort nach /run/telegram-bot-answer
+4. Bot sendet "wird validiert..." und startet claude-respond.service
+5. ❌ claude-respond-to-reports LIEST /run/telegram-bot-answer NICHT!
+6. ❌ Session bleibt in state="waiting_for_answer"
+7. ❌ Wartung beendet sich: "Session wartet noch - überspringe Wartung"
+8. ❌ Kein Code validiert Antwort oder resumed Session!
+```
+
+**Zusätzlicher Bug:**
+- Selbst wenn Antwort gelesen worden wäre: `exit 0` nach Sekretär-Validierung verhinderte Wartungs-Fortsetzung!
+
+### Lösung: Komplette PENDING-Answer-Logik implementiert
+
+**Datei:** `/usr/local/sbin/claude-respond-to-reports`
+
+**1. User-Antwort-Handler (Zeile 242+):**
+```bash
+elif [ "$SESSION_STATE" = "waiting_for_answer" ]; then
+    # Prüfe ob User via Telegram geantwortet hat
+    ANSWER_FILE="/run/telegram-bot-answer"
+    if [ -f "$ANSWER_FILE" ]; then
+        USER_ANSWER=$(cat "$ANSWER_FILE")
+        rm -f "$ANSWER_FILE"
+
+        # Sekretär validieren
+        VALIDATION=$(/usr/local/sbin/telegram-secretary "$PENDING_QUESTION" "$USER_ANSWER")
+
+        # Session updaten mit validierter Antwort
+        jq '.state = "answered" | .interactions += [...]' "$SESSION_FILE"
+
+        # PENDING_ANSWER setzen für Wartungs-Fortsetzung
+        PENDING_ANSWER="$VALIDATION"
+
+        # User-Feedback via Telegram
+        case "$PENDING_ANSWER" in
+            GENEHMIGT:*) telegram-notify "✅ Anfrage genehmigt...";;
+            ABGELEHNT:*) telegram-notify "🛡️ Anfrage abgelehnt...";;
+        esac
+    fi
+fi
+```
+
+**2. Problematisches `exit 0` entfernt (Zeile 304):**
+```bash
+# VOR dem Fix:
+            fi
+            exit 0  # ← VERHINDERTE Wartungs-Fortsetzung!
+        fi
+
+# NACH dem Fix:
+            fi
+        fi  # exit 0 entfernt → Wartung läuft weiter
+```
+
+### Workflow VORHER vs. NACHHER
+
+**❌ Vorher:**
+```
+07:15 - Wartung erstellt PENDING-Session
+07:15 - Wartung beendet sich (Exit 1)
+09:00 - User antwortet "Ja, Update durchführen"
+09:00 - Bot: "wird validiert..."
+09:00 - Bot startet claude-respond.service
+09:00 - claude-respond: "Session wartet noch" → Exit 0
+[... 2 Stunden Totenstille ...]
+11:00 - /var/log 70% voll → Alarm
+```
+
+**✅ Nachher:**
+```
+07:15 - Wartung erstellt PENDING-Session
+07:15 - Wartung beendet sich (Exit 1, korrekt)
+09:00 - User antwortet "Ja, Update durchführen"
+09:00 - Bot: "wird validiert..."
+09:00 - Bot startet claude-respond.service
+09:00 - claude-respond liest /run/telegram-bot-answer
+09:00 - Sekretär validiert: "GENEHMIGT: System-Update durchführen"
+09:00 - Session State → "answered"
+09:01 - Wartung setzt fort mit User-Genehmigung
+09:01 - Techniker-Claude führt readsb-Update durch
+```
+
+### Betroffene Komponenten
+
+| Komponente | Änderung |
+|------------|----------|
+| `/usr/local/sbin/claude-respond-to-reports` | **+60 Zeilen** User-Antwort-Handler |
+| `/usr/local/sbin/claude-respond-to-reports` | **-1 Zeile** Problematisches `exit 0` |
+| `/run/telegram-bot-answer` | Jetzt gelesen & gelöscht |
+| `/var/lib/claude-pending/session.json` | State: waiting → answered |
+
+### Kollateralschaden: /var/log 70% voll
+
+**Während der 2h Totenstille liefen Logs voll:**
+- chrony/tracking.log.1: 1.2M (von gestern, nicht rotiert)
+- rbfeeder.log: 768K (keine Rotation konfiguriert)
+- Alte *.log.1 Dateien: ~1M
+
+**Sofortmaßnahmen:**
+```bash
+# Alte Logs löschen
+sudo rm /var/log/*.log.1 /var/log/*.log.*.gz
+sudo rm /var/log/chrony/tracking.log.1
+
+# rbfeeder Log truncaten
+sudo truncate -s 0 /var/log/rbfeeder.log
+
+# rbfeeder Logrotate konfigurieren
+cat > /etc/logrotate.d/rbfeeder <<'LOGROTATE'
+/var/log/rbfeeder.log {
+    daily
+    rotate 1
+    maxsize 200K
+    compress
+}
+LOGROTATE
+```
+
+**Ergebnis:** 70% → 64%
+
+### Test & Verifikation
+
+**Test 1: User-Antwort-Erkennung**
+```bash
+# Simuliere User-Antwort
+echo "Ja, Update durchführen" | sudo tee /run/telegram-bot-answer
+
+# Starte Wartung
+sudo systemctl start claude-respond.service
+
+# Verifikation in Logs:
+[2026-02-08 11:28:13] User-Antwort via Telegram gefunden: Ja, Update durchführen
+[2026-02-08 11:28:32] Sekretär-Validierung: GENEHMIGT: System-Update durchführen
+```
+✅ **Erfolgreich!**
+
+**Test 2: Wartungs-Fortsetzung**
+```bash
+# Prüfe Session State
+jq '.state' /var/lib/claude-pending/session.json
+# Output: "answered"
+
+# Prüfe ob Claude CLI läuft (Wartung aktiv)
+pgrep -f "claude -p"
+# Output: 2453434 (Techniker-Claude läuft!)
+```
+✅ **Erfolgreich!**
+
+### Backup & Rollback
+
+**Backups:**
+- `/usr/local/sbin/claude-respond-to-reports.backup-before-pending-fix`
+- `/usr/local/sbin/claude-respond-to-reports.backup2`
+
+**Rollback:**
+```bash
+sudo cp /usr/local/sbin/claude-respond-to-reports.backup-before-pending-fix \
+        /usr/local/sbin/claude-respond-to-reports
+sudo systemctl restart claude-respond.service
+```
+
+### Lessons Learned
+
+**1. PENDING-Sessions müssen vollständigen Lifecycle haben:**
+- ✅ Erstellen (claude -p mit telegram-ask)
+- ✅ User-Antwort empfangen (telegram-bot → /run/telegram-bot-answer)
+- ✅ **NEU:** Antwort lesen & validieren (Sekretär)
+- ✅ **NEU:** Session State updaten (waiting → answered)
+- ✅ **NEU:** Wartung fortsetzen (ohne exit 0)
+
+**2. Totenstille ist inakzeptabel:**
+- User muss **sofort** Feedback bekommen wenn etwas hängt
+- Nicht erst nach 2 Stunden wenn Kollateralschäden auftreten!
+
+**3. tmpfs /var/log braucht Logrotate:**
+- Verbose Services (rbfeeder) müssen rotiert werden
+- Alte .log.1 Dateien müssen automatisch gelöscht werden
+
+### Status
+
+✅ **Produktiv seit 2026-02-08 11:28**
+- PENDING-Sessions funktionieren jetzt vollständig
+- User-Antworten werden sofort verarbeitet
+- Wartung setzt nach Genehmigung automatisch fort
+- Keine Totenstille mehr!
+
+---
 
 ## 2026-02-07 - Feeder-Watchdog: Robuster Netzwerk-Check
 
