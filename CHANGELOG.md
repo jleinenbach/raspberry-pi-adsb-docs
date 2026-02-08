@@ -5,6 +5,110 @@
 
 Chronologische Historie aller implementierten System-Änderungen.
 
+
+## 2026-02-08 - tmpfs /var/log Optimierung: 64% → 2%
+
+### Problem: /var/log tmpfs konstant zu voll
+
+**Symptome:**
+- tmpfs 50M war bei 64% (32M belegt)
+- Alarme bei 70% Belegung
+- User-Frage: "Ist 64% normal?"
+
+**Root Cause - Drei Probleme:**
+
+1. **30 MB gelöschte Datei noch offen gehalten:**
+   - `/var/log/rtl-ogn/ogn-decode.log (deleted)` - 30.2 MB
+   - procServ hielt Datei offen nach manuellem Löschen
+   - `df` zeigte 32M belegt, `du` nur 1.2M
+
+2. **ogn-decode.log wächst extrem schnell:**
+   - 2.2 KB/10s = **18 MB pro Tag!**
+   - Keine Logrotate konfiguriert
+   - tmpfs füllt sich in wenigen Tagen
+
+3. **tmpfs zu klein dimensioniert:**
+   - 50M bei 3.8G RAM = nur 1.3%
+   - Zu wenig Puffer für Log-Spitzen
+
+### Lösung 1: Gelöschte Datei freigeben
+
+```bash
+# Restart ogn-decode-procserv
+sudo systemctl restart ogn-decode-procserv
+
+# Effekt: 64% → 3% sofort!
+```
+
+### Lösung 2: Aggressive OGN Logrotate
+
+**Datei:** `/etc/logrotate.d/ogn-logs`
+
+```bash
+/var/log/rtl-ogn/ogn-decode.log {
+    hourly        # Sehr aggressive Rotation
+    rotate 2      # Nur 2 alte Versionen
+    maxsize 5M    # Max 5M pro Log
+    nocreate      # procServ erstellt selbst
+    postrotate
+        pkill -HUP procServ  # Signal zum Flush
+    endscript
+}
+
+/var/log/rtl-ogn/ogn-rf.log {
+    daily
+    maxsize 1M
+}
+```
+
+**Effekt:** Verhindert unbegrenztes Wachstum
+
+### Lösung 3: tmpfs von 50M auf 100M
+
+**Datei:** `/etc/fstab`
+
+```bash
+# Vorher:
+tmpfs /var/log tmpfs defaults,noatime,nosuid,mode=0755,size=50m 0 0
+
+# Nachher:
+tmpfs /var/log tmpfs defaults,noatime,nosuid,mode=0755,size=100m 0 0
+```
+
+**Remount:**
+```bash
+sudo mount -o remount,size=100m /var/log
+```
+
+**Effekt:** 100M bei 3.8G RAM = 2.6% (immer noch minimal)
+
+### Weitere Optimierungen
+
+**lynis Logs persistent:**
+```bash
+# Logs nach /var/lib/ verschoben (persistent)
+sudo mv /var/log/lynis.log /var/lib/lynis-logs/
+sudo ln -s /var/lib/lynis-logs/lynis.log /var/log/lynis.log
+```
+
+**rbfeeder Logrotate:**
+```bash
+# Bereits konfiguriert (maxsize 200K)
+/etc/logrotate.d/rbfeeder
+```
+
+### Ergebnis
+
+| Metrik | Vorher | Nachher |
+|--------|--------|---------|
+| tmpfs Größe | 50M | 100M |
+| Belegung | 32M (64%) | 1.2M (2%) |
+| Freier Platz | 18M | 99M |
+| ogn-decode.log | 30MB deleted + unbegrenzt | Max 5M, hourly rotiert |
+
+**Status:** ✅ Normal und nachhaltig!
+
+---
 ## 2026-02-08 - KRITISCH: PENDING-Session Bug - User-Antworten wurden ignoriert
 
 ### Problem: 2 Stunden Totenstille nach User-Antwort
