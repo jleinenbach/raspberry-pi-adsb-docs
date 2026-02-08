@@ -6,6 +6,76 @@
 Chronologische Historie aller implementierten System-Änderungen.
 
 
+## 2026-02-08 - Diagnose-Claude Permission-Flag Fix
+
+### Problem: Diagnose-Claude Exit 1 ohne Output
+
+**Symptome:**
+- wartungs-watchdog startet Diagnose-Claude
+- Nach 7-10 Sekunden: "[FEHLER] Diagnose-Claude Exit 1"
+- Kein Output zwischen den "========" Markern
+- Self-triggering Loop (Watchdog erkennt eigene Fehler)
+
+**Timeline der Untersuchung:**
+```
+12:15:36 - Diagnose-Claude gestartet (error)
+12:15:43 - [FEHLER] Diagnose-Claude Exit 1
+```
+
+**Root Cause:**
+- `wartungs-watchdog.service` läuft als root (kein `User=` Statement)
+- Diagnose-Claude wird mit `--dangerously-skip-permissions` aufgerufen
+- Claude CLI verweigert diesen Flag als root (Sicherheitsfeature)
+- Fehlermeldung: "cannot be used with root/sudo privileges for security reasons"
+- Exit Code 1, aber Output verschwindet bei Command Substitution
+
+**Unterschied zu claude-respond-to-reports:**
+- `claude-respond-to-reports` benutzt `--permission-mode acceptEdits` ✅
+- `wartungs-watchdog` benutzte `--dangerously-skip-permissions` ❌
+
+### Lösung: Permission-Flag Änderung
+
+**Änderung in `/usr/local/sbin/wartungs-watchdog` (Zeile 277):**
+```bash
+# Vorher (Exit 1 als root):
+--dangerously-skip-permissions
+
+# Nachher (funktioniert als root):
+--permission-mode acceptEdits
+```
+
+**Test:**
+```bash
+# Vorher (als root):
+--dangerously-skip-permissions cannot be used with root/sudo privileges
+Exit Code: 1
+
+# Nachher (als root):
+TEST-OK
+Exit Code: 0
+```
+
+### Self-Trigger Loop Fix
+
+**Problem:** Watchdog erkannte seine eigene Fehlermeldung als neuen Fehler
+
+**Lösung:** Bereits gefixt in `check_recent_errors()` (wartungs-watchdog Zeile 143):
+```bash
+# Ignoriere Diagnose-Claude Exits in Error-Detection
+if grep -E 'FEHLER|ERROR|Exit code [1-9]|...' | grep -qv "Diagnose-Claude Exit"
+```
+
+### Betroffene Dateien
+- `/usr/local/sbin/wartungs-watchdog` - Permission-Flag geändert
+- Backup: `/usr/local/sbin/wartungs-watchdog.backup-20260208-permissions`
+
+### Ergebnis
+✅ Diagnose-Claude funktioniert jetzt als root
+✅ Kein Self-Trigger Loop mehr
+✅ Fehlerausgabe wird korrekt geloggt
+
+---
+
 ## 2026-02-08 - Wartungs-Timeout Fix + Erfolgreiche Wiederholung
 
 ### Problem: Wartung Timeout nach 30 Minuten

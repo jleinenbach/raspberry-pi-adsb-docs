@@ -98,6 +98,11 @@ Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
 | OGN Log-Verzeichnis fehlt | Nach tmpfs-Cleanup Services crashen (Status 209/STDOUT) - `/var/log/rtl-ogn/` muss persistieren |
 | **log-persist rekursiver Bug** | **VERZEICHNISSE in log-persist.conf verursachen `/var/log/xyz/xyz/xyz/...` Rekursion!** |
 | log-persist Best Practice | **NUR DATEIEN** in log-persist.conf! Verzeichnisse via Symlink → /var/lib/ persistent machen |
+| **Claude CLI Permission-Flag** | **`--dangerously-skip-permissions` verboten als root! Nutze `--permission-mode acceptEdits`** |
+| Claude CLI als root | Sicherheitsfeature: --dangerously-skip-permissions → "cannot be used with root/sudo privileges" → Exit 1 |
+| Claude Permission Modes | acceptEdits, acceptAll, interactive, prompt - alle funktionieren als root (nur --dangerously-skip-permissions nicht!) |
+| Command Substitution Output | Fehlermeldungen können bei `$()` verschwinden (Output leer, aber Exit Code korrekt) |
+| systemd Service User | Kein `User=` Statement → Service läuft als root (Default) |
 | tmpfs-Volllauf Hauptursache | AIDE/apt rekursive Verzeichnisse (46M+3M von 50M) - NICHT Notfall-Cleanup sondern Root Cause fixen! |
 | **GPS Power-Cycle via UART** | **PAIR050 (Power ON), PAIR051 (Power OFF) für Software-Reset ohne Pi-Reboot** |
 | GPS Power-Cycle Ergebnis | Befehle werden akzeptiert aber GPS antwortet nicht sofort - braucht Cold Start (5-15 min) |
