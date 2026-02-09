@@ -1,10 +1,104 @@
 # System Changelog
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-08
+**Letzte Aktualisierung:** 2026-02-09
 
 Chronologische Historie aller implementierten System-Änderungen.
 
+
+## 2026-02-09 - readsb Autogain Update + Security Audit Logging
+
+### readsb Update: Verbesserte Autogain-Parameter
+
+**Problem:**
+- readsb v3.16.9 (git 7824553) hatte konservative Autogain-Defaults
+- Noise-Thresholds zu niedrig (27/31) → zu aggressives Gain-Switching
+- AGC-Umschaltung zu langsam (5 Minuten) → schlechte Reaktion auf Wetterwechsel
+
+**Durchgeführt:**
+```bash
+# Git-Repository auf offizielles wiedehopf-Repo umgestellt
+cd /usr/local/share/airplanes/readsb-git
+git remote set-url origin https://github.com/wiedehopf/readsb.git
+git fetch origin
+git pull origin dev  # 7824553 → 5831f91
+
+# Kompiliert und installiert
+make clean && make -j4 RTLSDR=yes OPTIMIZE="-O3 -march=native"
+cp readsb /usr/bin/readsb
+systemctl restart readsb mlathub
+```
+
+**Änderungen in readsb.c (commit 5831f91):**
+| Parameter | Alt | Neu | Auswirkung |
+|-----------|-----|-----|------------|
+| `noiseLowThreshold` | 27 | 34 | Höhere Schwelle = weniger Gain-Wechsel |
+| `noiseHighThreshold` | 31 | 36 | Stabilere Gain-Regelung |
+| AGC-Umschaltung | 5min | 30s | Schnellere Reaktion auf Bedingungsänderungen |
+
+**Konfiguration unverändert:**
+- `/etc/default/readsb`: `--gain 32.8auto` bleibt aktiv
+- Initial Gain: 32.8 dB, dann automatische Anpassung mit neuen Thresholds
+
+**Ergebnis:**
+- ✅ Robustere Autogain-Logik
+- ✅ Bessere Anpassung an Wetterwechsel
+- ✅ Keine Config-Anpassungen nötig (Änderungen sind hardcoded)
+
+**Repository-Wechsel:**
+- Vorher: airplanes-live/readsb (Fork)
+- Nachher: wiedehopf/readsb (Original)
+- Grund: Konsistenz mit Binary-Versionierung ("wiedehopf git")
+
+---
+
+### Script Security Audit: Inhaltliche Zusammenfassung
+
+**Problem:**
+- Wartungs-Logs zeigten nur "6 Probleme behoben" (Zahl)
+- Oder technische Detail-Liste (Skript + Fix)
+- Keine inhaltliche Zusammenfassung der Problem-Kategorien
+
+**Vorher:**
+```
+Script Security Audit (6 Probleme)
+  - test-dragonsync-api: set -o pipefail + --max-time 5
+  - aircraft-lookup: --max-time 3
+  - remove-wardragon-discovery: set -o pipefail
+  - rollback-zmq-decoder.sh: set -o pipefail
+  - tmpfs-emergency-cleanup: chmod 644 vor mv
+```
+
+**Nachher:**
+```
+Script Security Audit (6 Probleme behoben)
+
+  • Fehlendes Error Handling (3 Skripte): Pipes ignorierten Fehler → pipefail nachgerüstet
+  • Fehlende Timeouts (2 Skripte): curl-Befehle konnten unbegrenzt hängen → max-time hinzugefügt
+  • Unsichere File Permissions (1 Skript): Temp-Dateien ohne explizite Rechte → chmod vor mv
+```
+
+**Implementierung:**
+- Datei: `/usr/local/sbin/claude-respond-to-reports` (Zeilen 604-650)
+- Neue Logik gruppiert nach Problem-Kategorien:
+  - Fehlendes Error Handling (pipefail)
+  - Fehlende Timeouts (curl max-time)
+  - Unsichere File Permissions (chmod)
+  - Unsichere 'source' Befehle
+  - Command Injection (eval)
+  - Race Conditions (flock)
+  - Hardcoded Secrets (Tokens)
+
+**Ergebnis:**
+- ✅ Inhaltlich verständliche Zusammenfassung
+- ✅ Gruppierung nach Sicherheits-Kategorien
+- ✅ Erklärung was das Problem war und wie es behoben wurde
+
+**Dateien:**
+- `/usr/local/sbin/claude-respond-to-reports` (geändert)
+- Backup: `claude-respond-to-reports.backup-*`
+
+---
 
 ## 2026-02-08 - Diagnose-Claude Permission-Flag Fix
 

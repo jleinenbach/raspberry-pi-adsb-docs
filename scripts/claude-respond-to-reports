@@ -41,6 +41,151 @@ trap 'cleanup' EXIT
 
 heartbeat
 
+#!/bin/bash
+#===============================================================================
+# Wait-for-Quiet: Koordination zwischen ALLEN System-Aktivitäten
+# Wartet auf Reparaturen UND auf laufende manuelle Eingriffe
+#===============================================================================
+
+wait_for_quiet() {
+    local max_wait_seconds=600  # 10 Minuten max
+    local check_interval=15     # Alle 15 Sekunden prüfen
+    local start_time=$(date +%s)
+    local quiet_count=0
+    local required_quiet_checks=2  # 2 aufeinanderfolgende "ruhige" Checks
+    
+    log "🔍 Prüfe ob System bereit für Wartung..."
+    
+    while true; do
+        local now=$(date +%s)
+        local elapsed=$((now - start_time))
+        
+        # Timeout nach max_wait_seconds
+        if [ "$elapsed" -ge "$max_wait_seconds" ]; then
+            log "⚠️ Timeout nach ${max_wait_seconds}s - System nicht ruhig, starte trotzdem (mit Vorsicht)"
+            /usr/local/sbin/telegram-notify "⚠️ Wartung startet nach 10min Wartezeit - System war nicht vollständig ruhig"
+            return 1  # Nicht-ruhiger Zustand
+        fi
+        
+        local issues=()
+        
+        # 1. Prüfe auf Services im "activating" Status
+        local activating_services=$(systemctl list-units --state=activating --no-legend --no-pager 2>/dev/null | awk '{print $1}' | grep -v "^claude-respond.service$")
+        if [ -n "$activating_services" ]; then
+            issues+=("Services starten: $(echo "$activating_services" | tr '\n' ' ' | xargs)")
+        fi
+        
+        # 2. Prüfe ob Watchdog kürzlich aktiv war (letzte 2 Minuten)
+        if [ -f /var/log/feeder-watchdog.log ]; then
+            local watchdog_recent=$(tail -50 /var/log/feeder-watchdog.log | grep "VERSUCH:\|OK:" | tail -1)
+            if [ -n "$watchdog_recent" ]; then
+                local watchdog_time=$(echo "$watchdog_recent" | grep -oP '^\[\K[^\]]+' || echo "")
+                if [ -n "$watchdog_time" ]; then
+                    local watchdog_ts=$(date -d "$watchdog_time" +%s 2>/dev/null || echo 0)
+                    local watchdog_age=$((now - watchdog_ts))
+                    if [ "$watchdog_age" -lt 120 ]; then
+                        issues+=("Watchdog aktiv vor ${watchdog_age}s")
+                    fi
+                fi
+            fi
+        fi
+        
+        
+        # 2b. Prüfe ob Watchdog-Eskalationen vorliegen (given_up Services)
+        local given_up_services=$(ls /var/run/feeder-watchdog/*.given_up 2>/dev/null | wc -l)
+        if [ "$given_up_services" -gt 0 ]; then
+            # Wir wurden wegen Eskalation gerufen - informiere User
+            if [ ! -f /var/run/claude-watchdog-escalation-aware ]; then
+                log "📢 Watchdog-Eskalation erkannt: $given_up_services Service(s) aufgegeben"
+                local given_up_list=$(ls /var/run/feeder-watchdog/*.given_up 2>/dev/null | xargs -n1 basename | sed 's/.given_up$//' | tr '\n' ' ')
+                log "   Betroffene Services: $given_up_list"
+                /usr/local/sbin/telegram-notify "🔧 Claude-Wartung startet wegen Watchdog-Eskalation: $given_up_list"
+                touch /var/run/claude-watchdog-escalation-aware
+            fi
+            # Prüfe ob Watchdog GERADE aktiv ist (innerhalb letzter 30 Sekunden)
+            if [ -f /var/log/feeder-watchdog.log ]; then
+                local watchdog_very_recent=$(tail -20 /var/log/feeder-watchdog.log | grep -E "VERSUCH:|OK:|FEHLER:" | tail -1 2>/dev/null)
+                if [ -n "$watchdog_very_recent" ]; then
+                    local watchdog_time=$(echo "$watchdog_very_recent" | grep -oP '^\[\K[^\]]+' || echo "")
+                    if [ -n "$watchdog_time" ]; then
+                        local watchdog_ts=$(date -d "$watchdog_time" +%s 2>/dev/null || echo 0)
+                        local watchdog_age=$((now - watchdog_ts))
+                        if [ "$watchdog_age" -lt 30 ]; then
+                            issues+=("Watchdog repariert JETZT (vor ${watchdog_age}s)")
+                        fi
+                    fi
+                fi
+            fi
+        fi
+
+        # 3. Prüfe ob systemd-Restarts laufen (ExecMainStartTimestamp vor <30s)
+        local recent_restarts=$(systemctl show -p ExecMainStartTimestamp --value readsb piaware fr24feed adsbexchange-feed adsbfi-feed dragonsync atoms3-proxy ogn-rf-procserv ogn-decode-procserv tar1090 chronyd ntripcaster gps-mqtt-publisher 2>/dev/null | while read -r ts; do
+            if [ -n "$ts" ] && [ "$ts" != "n/a" ]; then
+                local start_ts=$(date -d "$ts" +%s 2>/dev/null || echo 0)
+                local age=$((now - start_ts))
+                if [ "$age" -lt 30 ]; then
+                    echo "$age"
+                fi
+            fi
+        done)
+        if [ -n "$recent_restarts" ]; then
+            local youngest=$(echo "$recent_restarts" | sort -n | head -1)
+            issues+=("Service-Restart vor ${youngest}s")
+        fi
+        
+        # 4. Prüfe ob andere Claude-Instanz läuft (außer uns selbst)
+        if [ -f /var/run/claude-respond.lock ]; then
+            local other_pid=$(cat /var/run/claude-respond.lock 2>/dev/null)
+            if [ "$other_pid" != "$$" ] && kill -0 "$other_pid" 2>/dev/null; then
+                issues+=("Andere Claude-Instanz (PID $other_pid)")
+            fi
+        fi
+        
+        # 5. Prüfe /do Queue Worker
+        if pgrep -f "do-queue-worker" > /dev/null 2>&1; then
+            issues+=("/do Queue Worker läuft")
+        fi
+        
+        # 6. NEU: Prüfe ob eine interaktive Claude CLI Session läuft
+        local claude_cli=$(pgrep -f "claude -p\|claude --project" | grep -v "^$$\$" | head -1)
+        if [ -n "$claude_cli" ]; then
+            issues+=("Interaktive Claude Session (PID $claude_cli)")
+        fi
+        
+        
+        
+        # Keine Probleme gefunden?
+        if [ ${#issues[@]} -eq 0 ]; then
+            quiet_count=$((quiet_count + 1))
+            if [ "$quiet_count" -ge "$required_quiet_checks" ]; then
+                log "✅ System ist ruhig (${quiet_count} aufeinanderfolgende Checks) - Wartung kann starten"
+                return 0
+            fi
+            log "🟢 System ruhig ($quiet_count/$required_quiet_checks), prüfe erneut in ${check_interval}s..."
+        else
+            # Probleme gefunden - reset quiet counter
+            if [ "$quiet_count" -gt 0 ]; then
+                log "⏸️ Neue Aktivität erkannt - reset quiet counter"
+            fi
+            quiet_count=0
+            log "⏳ Warte auf Ruhe (${elapsed}s/${max_wait_seconds}s): ${issues[*]}"
+            
+            # Nach 5 Minuten: Benachrichtige User
+            if [ "$elapsed" -eq 300 ]; then
+                /usr/local/sbin/telegram-notify "⏳ Wartung wartet seit 5min auf Ruhe: ${issues[*]}"
+            fi
+        fi
+        
+        sleep "$check_interval"
+        heartbeat  # Halte Wartungs-Watchdog am Leben während wir warten
+    done
+}
+
+# Rufe wait-for-quiet auf bevor Wartung beginnt
+wait_for_quiet
+QUIET_STATUS=$?
+
+
 #-------------------------------------------------------------------------------
 
 log "=========================================="
@@ -68,10 +213,94 @@ if [ -f "$SESSION_FILE" ]; then
             PENDING_QUESTION=$(jq -r ".question" "$SESSION_FILE" 2>/dev/null)
             PENDING_ANSWER=$(jq -r ".interactions[-1].validated" "$SESSION_FILE" 2>/dev/null)
             log "Offene Session gefunden mit Antwort: $PENDING_ANSWER"
+
+            # User-Feedback zur Validierung
+            case "$PENDING_ANSWER" in
+                GENEHMIGT:*)
+                    /usr/local/sbin/telegram-notify --success "✅ Sekretär: Anfrage genehmigt
+▶️ Wartung wird jetzt fortgesetzt..."
+                    ;;
+                ABGELEHNT:*)
+                    REASON=$(echo "$PENDING_ANSWER" | cut -d: -f2-)
+                    /usr/local/sbin/telegram-notify "🛡️ Sekretär: Anfrage abgelehnt
+Grund:$REASON
+
+Wartung wird übersprungen."
+                    # Session archivieren und abbrechen
+                    SID=$(jq -r ".id" "$SESSION_FILE")
+                    mv "$SESSION_FILE" "$SESSION_DIR/history/${SID}-rejected.json" 2>/dev/null
+                    rm -f "$LOCK_FILE"
+                    exit 0
+                    ;;
+                RÜCKFRAGE:*)
+                    FOLLOWUP=$(echo "$PENDING_ANSWER" | cut -d: -f2-)
+                    /usr/local/sbin/telegram-notify "📝 Sekretär hat Rückfrage:$FOLLOWUP
+
+▶️ Wartung setzt fort mit dieser Info..."
+                    ;;
+            esac
         elif [ "$SESSION_STATE" = "waiting_for_answer" ]; then
-            log "Session wartet noch auf Antwort - überspringe Wartung"
-            rm -f "$LOCK_FILE"
-            exit 0
+            # Prüfe ob User via Telegram geantwortet hat
+            ANSWER_FILE="/run/telegram-bot-answer"
+            if [ -f "$ANSWER_FILE" ]; then
+                USER_ANSWER=$(cat "$ANSWER_FILE")
+                rm -f "$ANSWER_FILE"
+
+                log "User-Antwort via Telegram gefunden: $USER_ANSWER"
+
+                # Sekretär validieren
+                VALIDATION=$(/usr/local/sbin/telegram-secretary "$PENDING_QUESTION" "$USER_ANSWER")
+                log "Sekretär-Validierung: $VALIDATION"
+
+                # Session updaten mit validierter Antwort
+                SESSION_ID=$(jq -r ".id" "$SESSION_FILE")
+                jq --arg ts "$(date -Iseconds)" \
+                   --arg raw "$USER_ANSWER" \
+                   --arg validated "$VALIDATION" \
+                   '.state = "answered" |
+                    .interactions += [{
+                        "timestamp": $ts,
+                        "raw": $raw,
+                        "validated": $validated
+                    }]' "$SESSION_FILE" > "$SESSION_FILE.tmp"
+                mv "$SESSION_FILE.tmp" "$SESSION_FILE"
+
+                # Session State neu laden für weiteren Workflow
+                SESSION_STATE="answered"
+                PENDING_CONTEXT=$(jq -r ".context" "$SESSION_FILE" 2>/dev/null)
+                PENDING_QUESTION=$(jq -r ".question" "$SESSION_FILE" 2>/dev/null)
+                PENDING_ANSWER="$VALIDATION"
+
+                # User-Feedback
+                case "$PENDING_ANSWER" in
+                    GENEHMIGT:*)
+                        /usr/local/sbin/telegram-notify --success "✅ Sekretär: Anfrage genehmigt
+▶️ Wartung wird jetzt fortgesetzt..."
+                        ;;
+                    ABGELEHNT:*)
+                        REASON=$(echo "$PENDING_ANSWER" | cut -d: -f2-)
+                        /usr/local/sbin/telegram-notify "🛡️ Sekretär: Anfrage abgelehnt
+Grund:$REASON
+
+Wartung wird übersprungen."
+                        # Session archivieren und abbrechen
+                        mv "$SESSION_FILE" "$SESSION_DIR/history/${SESSION_ID}-rejected.json" 2>/dev/null
+                        rm -f "$LOCK_FILE"
+                        exit 0
+                        ;;
+                    RÜCKFRAGE:*)
+                        FOLLOWUP=$(echo "$PENDING_ANSWER" | cut -d: -f2-)
+                        /usr/local/sbin/telegram-notify "📝 Sekretär hat Rückfrage:$FOLLOWUP
+
+▶️ Wartung setzt fort mit dieser Info..."
+                        ;;
+                esac
+            else
+                # Keine Antwort vorhanden - überspringe Wartung
+                log "Session wartet noch auf Antwort - überspringe Wartung"
+                rm -f "$LOCK_FILE"
+                exit 0
+            fi
         fi
     else
         SID=$(jq -r ".id" "$SESSION_FILE")
@@ -88,53 +317,9 @@ heartbeat
 #-------------------------------------------------------------------------------
 # Sammle Daten
 #-------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------
-# Sammle Daten - Kategorisiert
-#-------------------------------------------------------------------------------
-# Service-Kategorien (18 Services)
-CORE_SERVICES="readsb"
-FEED_SERVICES="piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient"
-MLAT_SERVICES="mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat"
-WEB_SERVICES="tar1090 graphs1090 adsbexchange-stats"
-DRONE_SERVICES="dragonsync"
-
-FEEDER_STATUS="Core ADS-B:
-"
-for svc in $CORE_SERVICES; do
-    FEEDER_STATUS="$FEEDER_STATUS  $svc: $(systemctl is-active $svc 2>/dev/null)
-"
-done
-
-FEEDER_STATUS="${FEEDER_STATUS}
-Upload Feeds:
-"
-for svc in $FEED_SERVICES; do
-    FEEDER_STATUS="$FEEDER_STATUS  $svc: $(systemctl is-active $svc 2>/dev/null)
-"
-done
-
-FEEDER_STATUS="${FEEDER_STATUS}
-MLAT Services:
-"
-for svc in $MLAT_SERVICES; do
-    FEEDER_STATUS="$FEEDER_STATUS  $svc: $(systemctl is-active $svc 2>/dev/null)
-"
-done
-
-FEEDER_STATUS="${FEEDER_STATUS}
-Web Services:
-"
-for svc in $WEB_SERVICES; do
-    FEEDER_STATUS="$FEEDER_STATUS  $svc: $(systemctl is-active $svc 2>/dev/null)
-"
-done
-
-FEEDER_STATUS="${FEEDER_STATUS}
-DragonSync:
-"
-for svc in $DRONE_SERVICES; do
-    FEEDER_STATUS="$FEEDER_STATUS  $svc: $(systemctl is-active $svc 2>/dev/null)
+FEEDER_STATUS=""
+for svc in readsb piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat tar1090 graphs1090 adsbexchange-stats ogn-rf-procserv ogn-decode-procserv ogn2dump1090 dragonsync atoms3-proxy aircraft-alert-notifier ogn-balloon-notifier drone-alert-notifier ntripcaster ntrip-proxy; do
+    FEEDER_STATUS="$FEEDER_STATUS$svc: $(systemctl is-active $svc 2>/dev/null)
 "
 done
 
@@ -146,8 +331,56 @@ else
     ESCALATIONS="Keine (0)"
 fi
 
+#-------------------------------------------------------------------------------
+# Timer-Service Health Check - Findet "leise crashende" Services
+#-------------------------------------------------------------------------------
+check_timer_services() {
+    local issues_found=0
+    local output=""
+    
+    # Finde alle aktiven Timer
+    local timers=$(systemctl list-timers --no-pager --no-legend 2>/dev/null | awk '{print $NF}' | grep -v "^$")
+    
+    for timer in $timers; do
+        local service="${timer%.timer}.service"
+        
+        # Prüfe ob Service existiert
+        systemctl list-unit-files "$service" &>/dev/null || continue
+        
+        # Hole letzte 50 Zeilen Journal
+        local journal=$(journalctl -u "$service" -n 50 --no-pager 2>/dev/null)
+        [ -z "$journal" ] && continue
+        
+        # Prüfe auf Problem-Indikatoren (außer normale Status-Meldungen)
+        local problems=$(echo "$journal" | grep -iE "permission denied|error.*failed|cannot|unable to|not found" | grep -v "0 loaded units\|Deactivated successfully\|no entries")
+        
+        if [ -n "$problems" ]; then
+            local last_run=$(systemctl show "$service" -p ExecMainStartTimestamp --value 2>/dev/null)
+            local exit_code=$(systemctl show "$service" -p ExecMainStatus --value 2>/dev/null)
+            
+            output+="$service (Timer: $timer)\n"
+            output+="  Exit: $exit_code | Letzter Lauf: $last_run\n"
+            output+="  Probleme:\n"
+            output+=$(echo "$problems" | head -3 | sed 's/^/    /')
+            output+="\n\n"
+            
+            ((issues_found++))
+        fi
+    done
+    
+    if [ "$issues_found" -eq 0 ]; then
+        echo "Keine Probleme (alle timer-basierten Services laufen sauber)"
+    else
+        echo -e "$output"
+    fi
+}
+
 REPORT_DATA="=== SYSTEMCTL --FAILED (KRITISCH!) ===
 $(systemctl --failed --no-pager 2>/dev/null || echo 'Fehler beim Abrufen')
+
+
+=== TIMER-BASED SERVICES HEALTH CHECK ===
+$(check_timer_services)
 
 === CORE SERVICES STATUS ===
 journald: $(systemctl is-active systemd-journald 2>/dev/null)
@@ -184,6 +417,38 @@ $(cat /run/readsb/stats.json 2>/dev/null | jq -r '"Gain: \(.gain_db)dB, Signal: 
 
 === USB-HARDWARE ===
 $(lsusb | grep -iE 'RTL|SDR|0BDA:2838|0BDA:2832' || echo 'WARNUNG: Kein RTL-SDR gefunden!')
+
+=== ATOMS3R STATUS (Remote ID) ===
+$(
+if [ -c "/dev/remoteid" ]; then
+    # Prüfe nur letzte Stunde für AtomS3R USB-Disconnects (Epochen-basiert)
+    CUTOFF_EPOCH=$(date -d "1 hour ago" +%s)
+    TOTAL_COUNT=$(sudo dmesg -T 2>/dev/null | grep -c "usb 1-1.4.*disconnect" || true)
+    
+    # Zähle recent disconnects mit korrektem Zeit-Parsing
+    RECENT_COUNT=0
+    while IFS= read -r line; do
+        if [[ $line =~ \[([A-Za-z]+\ [A-Za-z]+\ +[0-9]+\ [0-9]+:[0-9]+:[0-9]+\ [0-9]+)\] ]]; then
+            timestamp="${BASH_REMATCH[1]}"
+            line_epoch=$(date -d "$timestamp" +%s 2>/dev/null)
+            if [ -n "$line_epoch" ] && [ "$line_epoch" -gt "$CUTOFF_EPOCH" ]; then
+                ((RECENT_COUNT++))
+            fi
+        fi
+    done < <(sudo dmesg -T 2>/dev/null | grep "usb 1-1.4.*disconnect")
+    
+    LAST_DISCONNECT=$(sudo dmesg -T 2>/dev/null | grep "usb 1-1.4.*disconnect" | tail -1 | awk '{print $2, $3, $4}')
+
+    if [ "$RECENT_COUNT" -eq 0 ]; then
+        echo "✅ USB stabil (0 Disconnects letzte Stunde, total seit Boot: $TOTAL_COUNT)"
+        [ -n "$LAST_DISCONNECT" ] && echo "   Letzter Disconnect: $LAST_DISCONNECT"
+    else
+        echo "🔴 USB INSTABIL: $RECENT_COUNT Disconnects in letzter Stunde!"
+    fi
+else
+    echo "⚠️ AtomS3R nicht verbunden (/dev/remoteid fehlt)"
+fi
+)
 
 === SD-KARTEN-GESUNDHEIT ===
 $(sudo /usr/local/sbin/sd-health-check status 2>/dev/null || echo 'Check nicht verfügbar')
@@ -272,6 +537,33 @@ heartbeat
 
 #-------------------------------------------------------------------------------
 # CVE pip-Patcher: Automatische Python-Paket-Updates
+
+#-------------------------------------------------------------------------------
+# drone-mesh-mapper Firmware Update-Check (AtomS3)
+#-------------------------------------------------------------------------------
+DRONE_MESH_UPDATE=""
+
+if [ -d "/home/pi/drone-mesh-mapper" ]; then
+    cd /home/pi/drone-mesh-mapper
+    DRONE_CURRENT=$(git rev-parse --short HEAD 2>/dev/null)
+    git fetch --quiet 2>/dev/null
+    DRONE_LATEST=$(git rev-parse --short origin/main 2>/dev/null)
+    if [ "$DRONE_CURRENT" != "$DRONE_LATEST" ]; then
+        DRONE_MESH_UPDATE="drone-mesh-mapper: $DRONE_CURRENT -> $DRONE_LATEST UPDATE VERFÜGBAR"
+    fi
+    cd /home/pi
+fi
+
+if [ -n "$DRONE_MESH_UPDATE" ]; then
+    REPORT_DATA="$REPORT_DATA
+
+=== DRONE-MESH-MAPPER FIRMWARE UPDATE ===
+${DRONE_MESH_UPDATE}
+Neue Firmware in: /home/pi/drone-mesh-mapper/firmware/esp32s3-dual-rid.bin
+Reflash: esptool --port /dev/remoteid --chip esp32s3 write-flash -z 0x0 /home/pi/drone-mesh-mapper/firmware/esp32s3-dual-rid.bin"
+fi
+
+heartbeat
 #-------------------------------------------------------------------------------
 CVE_PIP_RESULT=""
 if [ -x /usr/local/sbin/cve-pip-patcher ]; then
@@ -312,23 +604,77 @@ fi
 if [ "$DAYS_AGO" -ge 7 ]; then
     log "Starte wöchentliches Script Security Audit..."
     AUDIT_OUTPUT=$(/usr/local/sbin/script-security-audit 2>&1) || true
-    ISSUES=$(echo "$AUDIT_OUTPUT" | grep -c '\[' || echo "0")
-    
+    ISSUES=$(echo "$AUDIT_OUTPUT" | grep -c '\[' || true)
+
     if [ "$ISSUES" -gt 0 ]; then
-        AUDIT_RESULT="Gefundene Probleme: $ISSUES
-$(echo "$AUDIT_OUTPUT" | grep '\[')"
+        # Gruppiere nach Problem-Kategorien
+        PIPEFAIL_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "pipefail" || true)
+        TIMEOUT_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "max-time" || true)
+        CHMOD_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "chmod" || true)
+        SOURCE_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "source" || true)
+        EVAL_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "eval" || true)
+        FLOCK_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "flock" || true)
+        TOKEN_COUNT=$(echo "$AUDIT_OUTPUT" | grep -c "Token" || true)
+
+        # Baue inhaltliche Zusammenfassung
+        AUDIT_SUMMARY=""
+        [ "$PIPEFAIL_COUNT" -gt 0 ] && AUDIT_SUMMARY="${AUDIT_SUMMARY}
+  • Fehlendes Error Handling ($PIPEFAIL_COUNT Skripte): Pipes ignorierten Fehler → pipefail nachgerüstet"
+        [ "$TIMEOUT_COUNT" -gt 0 ] && AUDIT_SUMMARY="${AUDIT_SUMMARY}
+  • Fehlende Timeouts ($TIMEOUT_COUNT Skripte): curl-Befehle konnten unbegrenzt hängen → max-time hinzugefügt"
+        [ "$CHMOD_COUNT" -gt 0 ] && AUDIT_SUMMARY="${AUDIT_SUMMARY}
+  • Unsichere File Permissions ($CHMOD_COUNT Skripte): Temp-Dateien ohne explizite Rechte → chmod vor mv"
+        [ "$SOURCE_COUNT" -gt 0 ] && AUDIT_SUMMARY="${AUDIT_SUMMARY}
+  • Unsichere 'source' Befehle ($SOURCE_COUNT Skripte): Potentielle Code Injection → validiert"
+        [ "$EVAL_COUNT" -gt 0 ] && AUDIT_SUMMARY="${AUDIT_SUMMARY}
+  • Command Injection ($EVAL_COUNT Skripte): eval mit User-Input → entfernt"
+        [ "$FLOCK_COUNT" -gt 0 ] && AUDIT_SUMMARY="${AUDIT_SUMMARY}
+  • Race Conditions ($FLOCK_COUNT Skripte): Queue-Zugriff ohne Locking → flock hinzugefügt"
+        [ "$TOKEN_COUNT" -gt 0 ] && AUDIT_SUMMARY="${AUDIT_SUMMARY}
+  • Hardcoded Secrets ($TOKEN_COUNT Skripte): Tokens im Code → externalisiert"
+
+        AUDIT_RESULT="Script Security Audit ($ISSUES Probleme behoben)
+$AUDIT_SUMMARY"
+
         REPORT_DATA="$REPORT_DATA
 
 === SCRIPT SECURITY AUDIT (wöchentlich) ===
 $AUDIT_RESULT"
     fi
-    
+
     date +%s > "$AUDIT_MARKER"
     log "Security Audit abgeschlossen: $ISSUES Probleme"
 fi
 
 heartbeat
 fi
+
+heartbeat
+
+#-------------------------------------------------------------------------------
+# System State Capture (für Context)
+#-------------------------------------------------------------------------------
+log "Erfasse System-State..."
+
+SYSTEM_STATE=$(cat <<EOF
+=== LAUFENDE SERVICES (NICHT NEUSTARTEN OHNE GRUND!) ===
+$(systemctl list-units --state=running --no-legend --no-pager | grep -E "atoms3-proxy|dragonsync|wifi-presence|feeder-watchdog|zmq-decoder" | awk '{print "• " $1 " (" $4 ")"}')
+
+=== AKTIVE PROZESSE ===
+$(ps aux | grep -E "atoms3-proxy|claude" | grep -v grep)
+
+=== SERIAL PORT STATUS ===
+Device: $(ls -la /dev/remoteid 2>/dev/null || echo "Not connected")
+In Use By: $(lsof /dev/ttyACM0 2>/dev/null | tail -n +2 || echo "Not in use")
+
+=== KRITISCHE ARCHITEKTUR ===
+atoms3-proxy läuft seit: $(systemctl show atoms3-proxy -p ActiveEnterTimestamp --value 2>/dev/null || echo "Not running")
+ZMQ Ports: $(ss -tlnp 2>/dev/null | grep -E "4224|4225" || echo "None")
+
+WICHTIG: atoms3-proxy ist SINGLE SERIAL READER!
+Kein Restart ohne triftigen Grund (würde Serial Port unterbrechen)!
+EOF
+)
 
 heartbeat
 
@@ -366,7 +712,32 @@ read -r -d '' PROMPT << 'PROMPTEOF'
 Du bist der TECHNIKER für einen Raspberry Pi ADS-B Feeder.
 Du hast volle Systemrechte, aber alle User-Anweisungen wurden bereits vom SEKRETÄR validiert.
 
-WICHTIG: Lies zuerst /home/pi/CLAUDE.md für:
+=== KRITISCHE REGELN (IMMER BEACHTEN!) ===
+
+1. NIEMALS atoms3-proxy neustarten außer bei echtem Fehler!
+   - Einziger Serial Reader für AtomS3R
+   - Restart unterbricht Remote ID + WiFi Presence Detection
+
+2. IMMER prüfen welche Services laufen BEVOR Änderungen gemacht werden:
+   systemctl is-active atoms3-proxy dragonsync wifi-presence-detector
+
+3. Bei Konfigurations-Änderungen an laufenden Services:
+   - Zuerst: Config sichern (cp config config.backup)
+   - Dann: Änderung machen
+   - Dann: systemctl reload oder restart
+   - Verifizieren: Service läuft noch
+
+4. NIEMALS Serial Port /dev/ttyACM0 direkt öffnen während atoms3-proxy läuft!
+   - Würde Port-Konflikt verursachen
+   - Nur wenn atoms3-proxy gestoppt wurde
+
+5. Declined Recommendations in MAINTENANCE-HISTORY.md sind VERBOTEN!
+   - Niemals erneut vorschlagen
+   - Wurden bewusst abgelehnt
+
+WICHTIG: Lies MAINTENANCE-HISTORY.md + CLAUDE.md:
+- /home/pi/MAINTENANCE-HISTORY.md - Declined Recommendations (NIEMALS erneut!)
+- /home/pi/CLAUDE.md für:
 - Declined Recommendations (NICHT erneut vorschlagen!)
 - Implemented Changes (verifizieren)
 - Kommunikationsregeln
@@ -387,10 +758,12 @@ Die Antwort hat IMMER eines dieser Formate:
 - TIMEOUT -> User hat nicht geantwortet, überspringen
 - PENDING:ID -> Session offen, User antwortet später - Wartung beenden, nächster Lauf setzt fort
 
-Für Nachrichten ohne Rückfrage:
-  /usr/local/sbin/telegram-notify "Info-Nachricht"
-  /usr/local/sbin/telegram-notify --success "Erfolg"
-  /usr/local/sbin/telegram-notify --error "Fehler"
+Für Zwischenmeldungen (SELTEN nutzen, nur bei langen Operationen):
+  /usr/local/sbin/telegram-notify "Info-Nachricht"  # Nur für lange Updates
+
+WICHTIG: Nutze telegram-notify nur für ZWISCHENMELDUNGEN bei langen Operationen!
+Die FINALE Wartungszusammenfassung MUSS via [TELEGRAM:OK] am Ende erfolgen.
+
 
 AUTOMATISCH (ohne Fragen - HÖCHSTE PRIORITÄT):
 - IMMER ZUERST: systemctl --failed prüfen und beheben!
@@ -430,7 +803,7 @@ Wenn "RASPBERRY PI FIRMWARE UPDATES" im Report erscheint:
 
 LYNIS-VORSCHLÄGE PROZEDUR:
 Für JEDEN Lynis-Vorschlag (suggestion) im Report:
-1. Prüfe ob in Declined-Liste (CLAUDE.md) → Überspringen
+1. Prüfe ob in Declined-Liste (MAINTENANCE-HISTORY.md) → Überspringen
 2. Bewerte: Lässt sich leicht umsetzen? Gefährdet es Stabilität?
 3. Wenn JA zu 2: User informieren und fragen
 4. Wenn NEIN (einfach + sicher): AUTOMATISCH umsetzen!
@@ -465,14 +838,18 @@ AUSGABE:
 - Dokumentiere abgelehnte/übersprungene Aktionen
 
 TELEGRAM AM ENDE (MAX 500 ZEICHEN!):
+WICHTIG: Tag MUSS am Zeilenanfang stehen, OHNE Markdown-Prefix (###, **, etc.)!
 [TELEGRAM:OK] Zusammenfassung - wenn Probleme behoben
 [TELEGRAM:ERROR] Zusammenfassung - wenn Probleme offen
 
 Sende IMMER am Ende eine KURZE Telegram-Zusammenfassung (max 500 Zeichen).
-Beispiel: /usr/local/sbin/telegram-notify "Wartung: 18 Services OK, keine CVEs, System gesund."
+Beispiel: [TELEGRAM:OK] Wartung: 15 Feeder OK, keine CVEs, System gesund.
 PROMPTEOF
 
 FULL_PROMPT="$PROMPT
+
+=== SYSTEM STATE (AKTUELL) ===
+$SYSTEM_STATE
 
 REPORT-DATEN:
 $REPORT_DATA$SESSION_CONTEXT"
@@ -487,7 +864,8 @@ heartbeat
 log "Starte Techniker-Claude..."
 CLAUDE_OUTPUT=$(echo "$FULL_PROMPT" | /home/pi/.local/bin/claude -p \
     --permission-mode acceptEdits \
-    --allowedTools "Bash Read Grep Edit" 2>&1)
+    --allowedTools "Bash Read Grep Edit" \
+    2>&1)
 EXIT_CODE=$?
 
 heartbeat
@@ -498,12 +876,70 @@ log "=========================================="
 log "Techniker beendet (Exit: $EXIT_CODE)"
 log "=========================================="
 
+#-------------------------------------------------------------------------------
+# Post-Repair Verification
+#-------------------------------------------------------------------------------
+log "Verifiziere kritische Services..."
+
+FAILED_SERVICES=""
+for svc in atoms3-proxy dragonsync wifi-presence-detector; do
+    if systemctl is-active "$svc" >/dev/null 2>&1; then
+        :  # OK
+    elif systemctl is-enabled "$svc" >/dev/null 2>&1; then
+        # Should be running but isn't
+        FAILED_SERVICES="$FAILED_SERVICES $svc"
+    fi
+done
+
+if [ -n "$FAILED_SERVICES" ]; then
+    log "❌ KRITISCH: Services nach Wartung ausgefallen:$FAILED_SERVICES"
+    /usr/local/sbin/telegram-notify --error "⚠️ Wartung hat Services beschädigt:$FAILED_SERVICES
+
+Versuche Rollback..."
+
+    # Attempt auto-restart
+    for svc in $FAILED_SERVICES; do
+        log "Versuche Restart: $svc"
+        systemctl start "$svc" 2>&1 | tee -a "$LOG_FILE"
+    done
+
+    # Verify again
+    STILL_FAILED=""
+    for svc in $FAILED_SERVICES; do
+        if ! systemctl is-active "$svc" >/dev/null 2>&1; then
+            STILL_FAILED="$STILL_FAILED $svc"
+        fi
+    done
+
+    if [ -n "$STILL_FAILED" ]; then
+        log "❌ KRITISCH: Services konnten nicht wiederhergestellt werden:$STILL_FAILED"
+        /usr/local/sbin/telegram-notify --error "🚨 KRITISCH: Services konnten nicht wiederhergestellt werden:$STILL_FAILED
+
+Manuelle Intervention erforderlich!"
+    else
+        log "✅ Alle Services erfolgreich wiederhergestellt"
+        /usr/local/sbin/telegram-notify --success "✅ Services wiederhergestellt nach Wartungsproblem"
+    fi
+fi
+
 # Telegram-Benachrichtigung
 if echo "$CLAUDE_OUTPUT" | grep -q '\[TELEGRAM:OK\]'; then
-    MSG=$(echo "$CLAUDE_OUTPUT" | grep '\[TELEGRAM:OK\]' | sed 's/\[TELEGRAM:OK\]//' | head -1)
+    # Robustes Parsing: Handle beide Fälle:
+    # 1. Tag in eigener Zeile (oft mit ### prefix): Nimm nächste nicht-leere Zeile
+    # 2. Tag und Nachricht in einer Zeile: Extrahiere nach Tag
+    MSG=$(echo "$CLAUDE_OUTPUT" | grep -A 10 '\[TELEGRAM:OK\]' | grep -v '\[TELEGRAM:OK\]' | grep -v '^#' | grep -v '^$' | head -1 | xargs)
+    if [ -z "$MSG" ]; then
+        # Fallback: Tag und Nachricht in derselben Zeile
+        MSG=$(echo "$CLAUDE_OUTPUT" | grep '\[TELEGRAM:OK\]' | sed 's/.*\[TELEGRAM:OK\] *//' | sed 's/^[#* ]*//' | xargs)
+    fi
     /usr/local/sbin/telegram-notify --success "$MSG"
 elif echo "$CLAUDE_OUTPUT" | grep -q '\[TELEGRAM:ERROR\]'; then
-    MSG=$(echo "$CLAUDE_OUTPUT" | grep '\[TELEGRAM:ERROR\]' | sed 's/\[TELEGRAM:ERROR\]//' | head -1)
+    # Robustes Parsing: Handle beide Fälle
+    MSG=$(echo "$CLAUDE_OUTPUT" | grep -A 10 '\[TELEGRAM:ERROR\]' | grep -v '\[TELEGRAM:ERROR\]' | grep -v '^#' | grep -v '^$' | head -1 | xargs)
+    if [ -z "$MSG" ]; then
+        # Fallback: Tag und Nachricht in derselben Zeile
+        MSG=$(echo "$CLAUDE_OUTPUT" | grep '\[TELEGRAM:ERROR\]' | sed 's/.*\[TELEGRAM:ERROR\] *//' | sed 's/^[#* ]*//' | xargs)
+    fi
     /usr/local/sbin/telegram-notify --error "$MSG"
 fi
 
