@@ -389,41 +389,36 @@ User ←→ Sekretär-Claude (nur Read/Grep) ←→ Techniker-Claude (Bash/Edit)
 
 ---
 
-## MLAT-Hub (2026-01-26, Fixed 2026-02-12)
-Dedupliziert MLAT-Ergebnisse von 4 Clients bevor sie an readsb gehen.
+## MLAT-Empfang (2026-02-12)
+**Status:** ✅ Direkte Verbindung (ohne mlathub)
 
 **Was ist MLAT?** Multilateration berechnet Positionen von Mode-S-Flugzeugen (ohne ADS-B)
 durch Vergleich der Empfangszeiten mehrerer Empfänger. Die Berechnung erfolgt auf den
 **externen MLAT-Servern**, nicht lokal.
 
+### Architektur (Option 1 - Direkt)
 ```
 adsbexchange-mlat ─┐
-adsbfi-mlat ───────┼──► mlathub:39004 ──► readsb:30107
-airplanes-mlat ────┤    (dedupliziert)     (remote=1 ✓)
+adsbfi-mlat ───────┼──► readsb:30104 (remote=1 ✓)
+airplanes-mlat ────┤
 piaware-mlat ──────┘
 ```
 
-| Komponente | Details |
-|------------|---------|
-| Service | `mlathub.service` (zweite readsb-Instanz) |
-| Input | Port 39004 (Beast von MLAT-Clients) |
-| Output | Port 30107 (Beast zu readsb, **Outbound-Connector**) |
-| Konfiguration | `/etc/systemd/system/mlathub.service` |
+**Warum direkt ohne mlathub?**
+- ✅ `remote=1` garantiert (INBOUND-Verbindungen)
+- ✅ MAGIC_MLAT_TIMESTAMP bleibt erhalten
+- ✅ Einfachere Architektur
+- ✅ readsb dedupliziert selbst (nimmt neueste Position)
+- ℹ️ Theoretisch 4x gleiche Position möglich (in der Praxis selten)
 
-**WICHTIG (2026-02-12 Fix):** mlathub muss als **Outbound-Connector** zu readsb verbinden,
-damit Nachrichten als `remote=1` markiert werden. Nur dann erkennt readsb den MAGIC_MLAT_TIMESTAMP
-(0xFF004D4C4154) und setzt `SOURCE_MLAT` für Positionen im JSON-mlat-Array.
-
-### Wie funktioniert die Deduplizierung?
-Der mlathub (readsb) wählt **NICHT** das genaueste Ergebnis - er nimmt das **neueste gültige**:
-
-| Prüfung | Beschreibung |
-|---------|--------------|
-| Zeitstempel | Neuere Daten ersetzen ältere |
-| speed_check | Position physikalisch möglich? (Distanz/Zeit plausibel) |
-| Quellenhierarchie | ADS-B > MLAT > TIS-B (aber MLAT vs MLAT = gleichwertig) |
-
-**Nicht implementiert:** Genauigkeitsvergleich, Gewichtung, Mittelwertbildung.
+### Konfiguration
+| Komponente | Port | Konfiguration |
+|------------|------|---------------|
+| piaware-mlat | → 30104 | `/etc/piaware.conf` |
+| adsbexchange-mlat | → 30104 | `/etc/default/adsbexchange` |
+| adsbfi-mlat | → 30104 | `/etc/default/adsbfi` |
+| airplanes-mlat | → 30104 | `/etc/default/airplanes` |
+| readsb | 30104 (listen) | `/etc/default/readsb` NET_OPTIONS |
 
 ### Warum erscheinen MLAT-Positionen nur sporadisch?
 MLAT-Positionen erscheinen im tar1090 MLAT-Filter **NUR** wenn:
@@ -435,20 +430,33 @@ MLAT-Positionen erscheinen im tar1090 MLAT-Filter **NUR** wenn:
 Die MLAT-Clients empfangen ~12-30 pos/min, aber diese sind meist für Flugzeuge mit ADS-B
 (zur Redundanz). Im JSON erscheinen nur Positionen für Mode-S-only Flugzeuge.
 
-### Was verbessert MLAT-Genauigkeit wirklich?
-| Faktor | Einfluss | Lokal umsetzbar? |
-|--------|----------|------------------|
-| Mehr Empfänger in Region | ⬆️⬆️⬆️ | Nein (Community) |
-| Geografische Verteilung | ⬆️⬆️ | Nein |
-| GPS-Zeitsync (PPS) | ⬆️⬆️ | Ja (Hardware ~50€) |
-| Besserer Empfang | ⬆️ | Bereits optimiert |
+### Rollback zu mlathub (falls nötig)
+```bash
+# 1. mlathub reaktivieren
+sudo systemctl enable mlathub
+sudo systemctl start mlathub
+
+# 2. MLAT-Clients umkonfigurieren (30104 → 39004)
+sudo sed -i 's/:30104/:39004/g' /etc/default/{airplanes,adsbfi,adsbexchange} /etc/piaware.conf
+sudo systemctl restart adsbexchange-mlat adsbfi-mlat airplanes-mlat piaware
+
+# 3. mlathub wieder in Watchdog aufnehmen
+# In /usr/local/sbin/feeder-watchdog: "mlathub" zur FEEDERS-Liste hinzufügen
+
+# 4. Backups falls nötig
+ls -lh /var/backups/scripts/*.backup-20260212*
+```
 
 **Diagnose:**
 ```bash
-# Verbindungen prüfen
-ss -tnp | grep 39004
-# Service-Status
-systemctl status mlathub
+# MLAT-Verbindungen prüfen
+ss -tn | grep ':30104.*ESTAB' | wc -l  # sollte 4 zeigen
+
+# MLAT-Daten in aircraft.json
+python3 -c "import json; data=json.load(open('/run/readsb/aircraft.json')); print(f'MLAT: {len([p for p in data[\"aircraft\"] if p.get(\"mlat\")])}')"
+
+# MLAT-Client Logs
+sudo journalctl -u adsbexchange-mlat --since "5 minutes ago" | grep "Results:"
 ```
 
 ---
@@ -648,8 +656,8 @@ piaware, fr24feed, adsbexchange-feed, adsbfi-feed, opensky-feeder, theairtraffic
 
 **Wichtig:** Diese Feeds empfangen NUR ADS-B-Daten (1090 MHz).
 
-### MLAT Services (4)
-mlathub, adsbexchange-mlat, adsbfi-mlat, airplanes-mlat
+### MLAT Services (3)
+adsbexchange-mlat, adsbfi-mlat, airplanes-mlat
 
 ### Web Services (3)
 tar1090, graphs1090, adsbexchange-stats
