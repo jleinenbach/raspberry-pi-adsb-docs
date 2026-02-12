@@ -3,13 +3,9 @@
 **Raspberry Pi 4 Model B** | Debian 12 (bookworm)
 **Standort:** 49.86625, 10.83948 | 283m
 
-> **Quick Start:** `~/docs/QUICKREF.md` ⚡ - Schnelle Referenz für häufige Befehle
->
-> **Dokumentation:** `~/docs/FEEDS.md` | `~/docs/MONITORING.md` | `~/docs/OGN-SETUP.md` | `~/docs/HOME-ASSISTANT.md` | `~/docs/DRAGONSYNC.md` | `~/docs/DRAGONSYNC-API.md` | `~/docs/ATOMS3-FIRMWARE.md` | `~/docs/PRESENCE-DETECTION.md` | `~/docs/GPS-NTRIP-PROXY.md` | `~/docs/GPS-AGNSS.md` | `~/docs/GPS-HOME-ASSISTANT.md`
->
+> **Dokumentation:** `~/docs/FEEDS.md` | `~/docs/MONITORING.md` | `~/docs/OGN-SETUP.md` | `~/docs/HOME-ASSISTANT.md` | `~/docs/DRAGONSYNC.md` | `~/docs/ATOMS3-FIRMWARE.md` | `~/docs/PRESENCE-DETECTION.md` | `~/docs/GPS-NTRIP-PROXY.md`
+> 
 > **Historie:** `~/docs/CHANGELOG.md` | `~/docs/MAINTENANCE-HISTORY.md` | `~/docs/LESSONS-LEARNED.md`
->
-> **Resources:** `~/docs/resources/` - Quectel PDFs & GitHub-Projekte
 
 ## 🛩️ Drei parallele Luftverkehrs-Empfänger
 
@@ -55,7 +51,7 @@ sudo grep -i "warning" /var/log/rkhunter.log 2>/dev/null | tail -10
 sudo cat /var/log/claude-maintenance/response-$(date +%Y-%m-%d).log 2>/dev/null | tail -60
 sudo tail -20 /var/log/feeder-watchdog.log 2>/dev/null
 
-# Services (29 Services nach Kategorie)
+# Services (21 Services nach Kategorie)
 # Core ADS-B
 systemctl is-active readsb
 # Upload Feeds (9)
@@ -66,12 +62,8 @@ systemctl is-active mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat
 systemctl is-active tar1090 graphs1090 adsbexchange-stats
 # OGN Services (3)
 systemctl is-active ogn-rf-procserv ogn-decode-procserv ogn2dump1090
-# DragonSync (2)
-systemctl is-active dragonsync atoms3-proxy
-# Alert Services (3)
-systemctl is-active aircraft-alert-notifier ogn-balloon-notifier drone-alert-notifier
-# GPS Services (4)
-systemctl is-active ntripcaster ntrip-proxy chronyd gps-mqtt-publisher
+# DragonSync
+systemctl is-active dragonsync
 # Hardware
 lsusb | grep -i RTL
 
@@ -86,42 +78,6 @@ cat /etc/apt/preferences.d/apt-listbugs 2>/dev/null | grep -v "^#" | head -10
 ```
 
 **Danach:** CLAUDE.md aktualisieren (Declined/Pending/Implemented)
-
----
-
-## Apt-Pinning: bookworm + trixie Mix (BEABSICHTIGT!)
-
-**⚠️ WICHTIG:** Das System hat trixie-Quellen in `/etc/apt/sources.list`, aber das ist NICHT "teilweise migriert"!
-
-**Status:** ✅ Stabiles Pinning für einzelnes Paket
-
-**Konfiguration:** `/etc/apt/preferences.d/01-cert-pinning`
-```bash
-# Prioritäten
-bookworm:         900  # Standard (hoch)
-trixie:            50  # Ignoriert (niedrig)
-ca-certificates:  990  # Ausnahme (höchste)
-```
-
-**Installierte trixie-Pakete:**
-- `ca-certificates` (20250419) - Einziges Paket aus trixie
-  - **Grund:** Let's Encrypt Root CA Bug in bookworm (20230311)
-  - **Seit:** 2024-10-xx (siehe CHANGELOG.md)
-
-**Prüfung:**
-```bash
-# Pinning-Status
-apt-cache policy | grep -A2 "bookworm\|trixie"
-
-# Trixie-Pakete auflisten (sollte nur ca-certificates sein)
-dpkg -l | awk '/^ii/ {print $2}' | xargs -I {} sh -c \
-  'apt-cache policy {} 2>/dev/null | grep -q "^\*\*\*.*trixie" && echo {}'
-```
-
-**Bei Wartung:**
-- ✅ **Ignoriere Warnungen** über "trixie APT-Quellen"
-- ✅ **Prüfe Pinning-Konfiguration** in `/etc/apt/preferences.d/01-cert-pinning`
-- ❌ **NICHT fragen** ob System zurück zu bookworm migriert werden soll
 
 ---
 
@@ -149,9 +105,15 @@ Siehe `~/docs/CHANGELOG.md` für vollständige Historie aller implementierten Ä
 
 | Befehl | Beschreibung |
 |--------|--------------|
+| `/help` | Zeigt Hilfe zu allen verfügbaren Befehlen |
 | `/status` | System Health + Drohnen live |
-| `/stats` | Statistiken (ADS-B: aktuell + seit Start, MLAT, OGN: /min /h /12h, Remote ID: aktuell + 24h) |
+| `/stats` | Statistiken (ADS-B, OGN/FLARM, Remote ID) |
 | `/log` | Letzte Wartung |
+| `/errors [1h\|24h\|7d]` | Intelligente Fehleranalyse mit Claude + interaktive Buttons |
+| `/flugzeug <hex>` | Flugzeugdetails (ICAO hex → Registration, Typ, Live-Daten, tar1090 Link) |
+| `/service [name]` | Service-Status (ohne Parameter: Liste mit Ampeln, mit Parameter: Details) |
+| `/gps` | GPS/RTK Status (Hardware, PPS, Satelliten, Almanach, NTRIP, Services) |
+| `/frage` | Zeigt offene Fragen von Claude (Zwei-Claude-Architektur) |
 | `/do <text>` | Queue-Anweisung (auch bei aktiver Session) |
 | `/wartung` | Volle Wartung (~5min) |
 | `/abbrechen` | Session abbrechen |
@@ -175,6 +137,246 @@ Siehe `~/docs/CHANGELOG.md` für vollständige Historie aller implementierten Ä
 
 **Wichtig:** `/home/pi/.claude/` muss User `pi` gehören (nicht root)!
 
+### /errors - Intelligente Fehleranalyse (2026-02-04)
+**Status:** ✅ Produktiv
+
+Claude-gestützte Fehleranalyse mit interaktiven Buttons für schnelle Diagnose und Reparatur.
+
+**Architektur:**
+```
+/errors → Backend (error-troubleshooter) → journalctl + Claude
+                         ↓
+         JSON (summary, problems, raw_output)
+                         ↓
+         Telegram Inline Keyboard (5 Buttons)
+                         ↓
+         Callback Query → Aktionen
+```
+
+**Backend:** `/usr/local/sbin/error-troubleshooter`
+- `analyze <timeframe>` - Sammelt Errors via journalctl, analysiert mit Claude
+- `check-service <name>` - Service Health Check
+- `usb-stats` - USB-Statistiken (Disconnects, Geräte)
+- `restart-service <name>` - Service-Neustart
+
+**Buttons:**
+1. **🔍 Details anzeigen** - Zeigt vollständige Claude-Analyse
+2. **🔧 Automatisch reparieren** - Startet Wartung mit Fokus auf erkannte Fehler
+3. **📊 Service-Check** - Prüft readsb Service-Status
+4. **📈 USB-Statistik** - Zeigt USB-Disconnects letzte 24h
+5. **❌ Abbrechen** - Beendet Interaktion
+
+**Intelligente Klassifikation:**
+- ✅ **Keine Errors:** "System läuft stabil"
+- 🟢 **Harmlose Errors:** Erkennt collectd RRD timing, FFTW benchmarking
+- 🔴 **Echte Probleme:** Zeigt Top 3 Probleme mit Buttons für Aktionen
+
+**Kontext-Speicherung:** `/run/telegram-errors-context.json` (für Callback-Buttons)
+
+**Claude-Prompt:** Analysiert Errors kurz und prägnant, ignoriert bekannte harmlose Warnungen
+
+### /flugzeug - Flugzeugdetails nachschlagen (2026-02-04)
+**Status:** ✅ Produktiv
+
+Schnelle Flugzeugabfrage via ICAO hex mit Stammdaten und Live-Tracking.
+
+**Backend:** `/usr/local/sbin/aircraft-lookup`
+- Sucht in readsb aircraft.json (Live-Daten)
+- Sucht in tar1090 aircraft.csv (Stammdaten: Registration, Typ, Beschreibung)
+- Generiert tar1090 Direkt-Link
+
+**Ausgabe:**
+```
+✈️ Flugzeug 3c6444
+
+Stammdaten
+📋 Registration: D-AIBD
+🛩️ Typ: A319 - AIRBUS A-319
+
+Live-Daten 🟢
+📞 Callsign: DLH123
+📏 Höhe: 37000 ft (11278 m)
+🚀 Speed: 450 kt (833 km/h)
+🧭 Track: 285°
+📍 Position: 49.123, 10.456
+⏱ Gesehen: vor 5s
+📊 Messages: 1234
+📡 RSSI: -15.2 dB
+🔢 Squawk: 1234
+🟢 Emergency: none
+
+🔗 tar1090 öffnen
+```
+
+**Features:**
+- Automatische Normalisierung (Groß-/Kleinschreibung, 0x-Prefix)
+- Validierung (6 hexadezimale Zeichen)
+- Zeigt "Aktuell nicht sichtbar" wenn Flugzeug außer Reichweite
+- Emergency-Anzeige (🟢 normal, 🔴 emergency)
+- Metrische + imperiale Einheiten (ft/m, kt/km/h)
+
+**Verwendung:**
+- `/flugzeug 3c6444` - Deutsche Lufthansa
+- `/flugzeug 4082e7` - British Airways
+- ICAO hex aus tar1090 kopieren
+
+### /service - Service-Diagnose (2026-02-04)
+**Status:** ✅ Produktiv
+
+Schnelle Service-Übersicht oder detaillierte Diagnose einzelner Services.
+
+**Backend:** `/usr/local/sbin/service-info`
+- Liest systemd Service-Status, Uptime, Restarts, Logs
+- Gibt JSON zurück für Telegram-Formatierung
+
+**Zwei Modi:**
+
+**1. Ohne Parameter: Liste aller Services**
+```
+/service
+
+→ Zeigt alle 29 Services nach Kategorie mit Ampeln:
+🟢 aktiv | 🔴 failed | ⚫ inactive | 🟡 activating
+
+Kategorien:
+- Core (readsb)
+- Upload Feeds (9 Services)
+- MLAT (4 Services)
+- Web (3 Services)
+- OGN/FLARM (3 Services)
+- DragonSync (2 Services)
+- Alerts (3 Services)
+- GPS/RTK (4 Services)
+```
+
+**2. Mit Parameter: Detaillierte Service-Info**
+```
+/service readsb
+
+→ Detaillierte Diagnose:
+🔧 Service: readsb
+
+Status
+🟢 Status: active
+🟢 Enabled: enabled
+🆔 PID: 985714
+⏱ Uptime: 5h 15m
+🔄 Restarts: 0
+💾 Memory: 45 MB (falls verfügbar)
+📊 Tasks: 9
+
+Letzte Logs
+[Letzte 10 Log-Zeilen]
+```
+
+**Features:**
+- **Status-Icons:** 🟢 active, 🔴 failed, ⚫ inactive, 🟡 activating
+- **Uptime-Format:** Automatisch d/h/m je nach Dauer
+- **Memory/Tasks:** Anzeige falls von systemd erfasst
+- **Problem-Diagnose:** Result + Exit Code bei Fehlern
+- **Log-Auszug:** Letzte Zeilen für schnelle Diagnose
+
+**Verwendung:**
+- `/service` - Komplette Übersicht mit Ampeln
+- `/service readsb` - Details zu readsb
+- `/service piaware` - Details zu piaware
+- Service-Namen ohne .service Extension
+
+### /gps - GPS/RTK Status (2026-02-04)
+**Status:** ✅ Produktiv
+
+Umfassender GPS-Status ohne NMEA-Zugriff (GPS-Device durch str2str blockiert).
+
+**Backend:** `/usr/local/sbin/gps-status`
+- Sammelt GPS-Informationen non-invasiv (kein Service-Stop)
+- Daten aus chrony (PPS), systemd (Services), heuristische Satelliten-Schätzung
+- Gibt vollständiges JSON mit allen GPS-Metriken zurück
+
+**Datenquellen:**
+```
+chrony (PPS)     → Zeitgenauigkeit, Stratum, Offset, Samples
+systemd          → Service-Status (ntripcaster, ntrip-proxy, chronyd, gps-mqtt)
+ntripcaster      → Client-Anzahl, Uptime
+Heuristik        → Satelliten-Schätzung basierend auf PPS-Qualität
+Konfiguration    → RTK Fixed Position (49.86625, 10.83948, 283m)
+```
+
+**Ausgabe:**
+```
+🛰 GPS/RTK Status
+
+Hardware
+📡 Waveshare LC29H (Dual-Band RTK GNSS)
+🔌 /dev/ttyAMA0 (GPIO UART)
+⚡ PPS: /dev/pps0 (GPIO 18)
+
+GPS Fix
+📍 Fix: 3D
+🎯 Qualität: RTK Fixed
+📊 PDOP: excellent
+
+Position (RTK Fixed)
+🌍 49.86625, 10.83948
+📏 283 m
+
+PPS Zeitgenauigkeit 🟢
+⚡ Stratum: 1 (GPS-locked)
+⏱ Offset: +0ns (sub-nanosecond)
+📈 Samples: 19
+🕐 System Time: 0.000000155 seconds
+
+Satelliten
+🛰 Schätzung: 12-20 visible (Multi-GNSS: GPS+GLO+GAL+BDS)
+📶 Signalqualität: excellent (sub-nanosecond)
+
+GNSS-Systeme
+🌐 GPS(L1+L5), GLONASS, Galileo, BeiDou, QZSS
+
+Almanach & Ephemeris
+📅 Almanach: valid
+📡 Ephemeris: current
+🌐 A-GPS: not configured (24/7 operation)
+
+NTRIP Base Station 🟢
+👥 Clients: 0
+⏱ Uptime: 23h 5m
+
+Services
+🟢 ntripcaster
+🟢 ntrip-proxy
+🟢 chronyd
+🟢 gps-mqtt-publisher
+
+Software
+📦 RTKLIB str2str: installed
+⏰ chrony: 4.3
+📍 gpsd: 3.22
+```
+
+**Features:**
+- **Non-Invasive:** Kein GPS-Device-Zugriff nötig (str2str blockiert /dev/ttyAMA0)
+- **PPS-basiert:** Zeitgenauigkeit im Nanosekunden-Bereich
+- **Satelliten-Heuristik:** Schätzung basierend auf PPS-Qualität (LC29H Dual-Band: 12-20 Satelliten)
+- **Multi-GNSS:** GPS L1+L5, GLONASS, Galileo, BeiDou, QZSS
+- **Almanach-Status:** Inferiert aus PPS Stratum 1 (bei 24/7 Betrieb automatisch aktuell)
+- **NTRIP-Monitoring:** Base Station Status, Client-Anzahl, Uptime
+- **Service-Übersicht:** Alle 4 GPS-relevanten Services mit Status-Icons
+
+**Limitierungen:**
+- **Keine direkte Satelliten-Zählung:** GPS-Device durch str2str blockiert, Schätzung via PPS-Qualität
+- **Keine Satelliten-Details:** Elevation, Azimuth, SNR nicht verfügbar ohne Device-Zugriff
+- **Kein echter A-GPS:** LC29H unterstützt AGNSS, aber nicht konfiguriert (nicht nötig bei 24/7 Betrieb)
+
+**Technische Details:**
+- **Waveshare LC29H:** Dual-Band RTK GNSS (L1+L5)
+- **PPS-Pin:** GPIO 18 (/dev/pps0) für Nanosekunden-Zeitsync
+- **GPS-Device:** /dev/ttyAMA0 (115200 Baud, belegt durch str2str)
+- **RTK Position:** Fixed Base Station (49.86625, 10.83948, 283m)
+- **Stratum 1:** Direkt GPS-synchronisiert (beste NTP-Qualität)
+
+**Verwendung:**
+- `/gps` - Vollständiger GPS-Status
+
 ---
 
 ## Zwei-Claude-Architektur
@@ -187,7 +389,7 @@ User ←→ Sekretär-Claude (nur Read/Grep) ←→ Techniker-Claude (Bash/Edit)
 
 ---
 
-## MLAT-Hub (2026-01-26)
+## MLAT-Hub (2026-01-26, Fixed 2026-02-12)
 Dedupliziert MLAT-Ergebnisse von 4 Clients bevor sie an readsb gehen.
 
 **Was ist MLAT?** Multilateration berechnet Positionen von Mode-S-Flugzeugen (ohne ADS-B)
@@ -196,17 +398,21 @@ durch Vergleich der Empfangszeiten mehrerer Empfänger. Die Berechnung erfolgt a
 
 ```
 adsbexchange-mlat ─┐
-adsbfi-mlat ───────┼──► mlathub:39004 ──► readsb:30104
-airplanes-mlat ────┤    (dedupliziert)
+adsbfi-mlat ───────┼──► mlathub:39004 ──► readsb:30107
+airplanes-mlat ────┤    (dedupliziert)     (remote=1 ✓)
 piaware-mlat ──────┘
 ```
 
 | Komponente | Details |
 |------------|---------|
 | Service | `mlathub.service` (zweite readsb-Instanz) |
-| Input | Port 39004 (Beast) |
-| Output | Port 39005 (Beast), → readsb:30104 |
+| Input | Port 39004 (Beast von MLAT-Clients) |
+| Output | Port 30107 (Beast zu readsb, **Outbound-Connector**) |
 | Konfiguration | `/etc/systemd/system/mlathub.service` |
+
+**WICHTIG (2026-02-12 Fix):** mlathub muss als **Outbound-Connector** zu readsb verbinden,
+damit Nachrichten als `remote=1` markiert werden. Nur dann erkennt readsb den MAGIC_MLAT_TIMESTAMP
+(0xFF004D4C4154) und setzt `SOURCE_MLAT` für Positionen im JSON-mlat-Array.
 
 ### Wie funktioniert die Deduplizierung?
 Der mlathub (readsb) wählt **NICHT** das genaueste Ergebnis - er nimmt das **neueste gültige**:
@@ -218,6 +424,16 @@ Der mlathub (readsb) wählt **NICHT** das genaueste Ergebnis - er nimmt das **ne
 | Quellenhierarchie | ADS-B > MLAT > TIS-B (aber MLAT vs MLAT = gleichwertig) |
 
 **Nicht implementiert:** Genauigkeitsvergleich, Gewichtung, Mittelwertbildung.
+
+### Warum erscheinen MLAT-Positionen nur sporadisch?
+MLAT-Positionen erscheinen im tar1090 MLAT-Filter **NUR** wenn:
+1. **Mode-S-only Flugzeuge** (ohne ADS-B) in Reichweite sind
+2. Diese von **mehreren Empfängern** in der Region gesehen werden
+3. Der MLAT-Server erfolgreich eine Position berechnet hat
+4. **Keine bessere Position** vorhanden ist (ADS-B wird immer bevorzugt)
+
+Die MLAT-Clients empfangen ~12-30 pos/min, aber diese sind meist für Flugzeuge mit ADS-B
+(zur Redundanz). Im JSON erscheinen nur Positionen für Mode-S-only Flugzeuge.
 
 ### Was verbessert MLAT-Genauigkeit wirklich?
 | Faktor | Einfluss | Lokal umsetzbar? |
@@ -358,411 +574,7 @@ vcgencmd get_throttled
 - Defektes USB-C-Kabel
 - RTL-SDR an USB 2.0 Port (sollte USB 3.0 sein)
 
-### Timer-Service Health Check (2026-02-03)
-**Problem:** Timer-basierte Services (systemd oneshot mit Timer) können "leise crashen":
-- Exit Code 0 (erfolgreich) trotz Fehlern im Journal
-- `systemctl --failed` zeigt NICHTS an
-- `journalctl -p err` zeigt NICHTS an (Permission denied ist kein error-level)
-- Service läuft alle X Minuten erneut und crasht jedes Mal
-
-**Beispiel:** do-queue-worker crashte alle 2 Minuten mit "Permission denied", aber war unsichtbar für normale Monitoring-Tools.
-
-**Lösung:** `check_timer_services()` in `claude-respond-to-reports`
-```bash
-# Scannt ALLE Timer-basierten Services auf Problem-Indikatoren:
-# - "permission denied"
-# - "error.*failed"
-# - "cannot"
-# - "unable to"
-# - "not found"
-
-# Integration in täglicher Wartung (07:00)
-# Ausgabe im REPORT_DATA vor "CORE SERVICES STATUS"
-```
-
-**Was wird geprüft:**
-1. Alle aktiven systemd Timers finden (`systemctl list-timers`)
-2. Für jeden Timer den zugehörigen Service finden (`.timer` → `.service`)
-3. Letzte 50 Journal-Einträge scannen (unabhängig vom Log-Level)
-4. Problem-Indikatoren suchen (auch bei Exit 0)
-5. Exit-Code und Timestamp des letzten Laufs anzeigen
-
-**Testergebnis (2026-02-03):**
-- ✅ Hätte do-queue-worker Permission denied erkannt
-- ✅ Jetzt integriert in tägliche Wartung
-- ✅ Erkennt "leise crashende" Services zuverlässig
-
 ---
-
----
-
-## 🏗️ Architekturentscheidungen (2026-02-06)
-
-**KRITISCHE REGEL:** Architekturentscheidungen erfordern **Deep Dive Analyse** und **vollständige Transparenz**.
-
-### Definitionen
-
-**Architekturentscheidung = Änderung die Systemkomponenten entfernt/ersetzt/umbaut**
-
-**Beispiele:**
-- Service deaktivieren/löschen
-- Komponenten zusammenführen (z.B. zmq-decoder entfernen, atoms3-proxy erweitern)
-- Protokoll-/Port-Änderungen
-- Datenfluss umrouten
-
-**KEINE Architekturentscheidungen:**
-- Service neustarten
-- Config-Parameter anpassen (ohne Komponentenwechsel)
-- Security-Patches
-- Dependency-Updates
-
-### Pflicht-Prozedur bei Architekturentscheidungen
-
-#### 1. Deep Dive (IMMER ZUERST!)
-
-```bash
-# a) Verstehe die Komponente
-- Was macht sie GENAU? (Code lesen!)
-- Welche Abhängigkeiten hat sie?
-- Wer konsumiert ihre Ausgabe?
-
-# b) Verstehe das Problem
-- Warum crashed/failed sie?
-- Logs prüfen (journalctl -u SERVICE --since "7 days ago")
-- Port-Konflikte? (ss -tlnp | grep PORT)
-- Dependencies missing?
-
-# c) Verstehe Alternativen
-- Gibt es andere Komponenten die das gleiche tun?
-- Was können Alternativen MEHR?
-- Was können Alternativen WENIGER?
-- Funktioniert das System ohne die Komponente?
-
-# d) Verstehe Auswirkungen
-- Welche Services hängen davon ab?
-- Gibt es Monitoring das auf die Komponente zeigt?
-- Dokumentation veraltet?
-```
-
-#### 2. Eskalations-Leiter (PFLICHT!)
-
-**Level 1: Restart**
-- systemctl restart SERVICE
-- Versuche 3x mit Delay
-
-**Level 2: Repair**
-- Config-Fehler beheben
-- Dependencies installieren
-- Permissions fixen
-
-**Level 3: Watchdog-Eskalation**
-- Feeder-Watchdog versucht 6x über 5h
-- Exponentielles Backoff
-- Automatische Telegram-Benachrichtigung
-
-**Level 4: Claude Deep Dive** (erst hier!)
-- Tiefe Analyse des Problems
-- Alternativen prüfen
-- **User-Rückfrage bei Architekturänderung**
-
-**Level 5: Architekturentscheidung** (nur mit Genehmigung!)
-- Vollständige Dokumentation erstellen
-- Rollback-Plan vorbereiten
-- Telegram-Erklärung senden
-- Änderung durchführen
-- Dokumentation aktualisieren
-
-#### 3. User-Kommunikation (PFLICHT!)
-
-**VOR der Änderung via Telegram:**
-```
-🏗️ ARCHITEKTURENTSCHEIDUNG ERFORDERLICH
-
-Problem:
-[Service] crashed seit [Zeitraum]
-
-Analyse:
-[Deep Dive Zusammenfassung in 3-5 Sätzen]
-
-Vorschlag:
-[Service] entfernen, weil [Begründung]
-
-Alternative löst das gleich durch:
-[Technische Erklärung]
-
-Was verlieren wir:
-[Features die wegfallen, oder "Nichts"]
-
-Rollback:
-[Wie rückgängig machen]
-
-Genehmigen? (J/N)
-```
-
-**NACH der Änderung (bei Genehmigung):**
-```
-✅ Architekturänderung durchgeführt
-
-[Service] entfernt
-[Alternative] übernimmt Aufgaben
-System läuft stabil
-
-Dokumentiert in:
-- CLAUDE.md: [Sektion]
-- CHANGELOG.md: [Eintrag]
-
-Rollback-Befehl:
-[Genauer Befehl zum Rückgängig machen]
-```
-
-#### 4. Dokumentation (PFLICHT!)
-
-**Sofort nach Änderung:**
-
-1. **CHANGELOG.md:**
-```markdown
-## 2026-02-XX - [Service] Architecture Change
-
-### Entfernt
-- **[Service]**: [Grund]
-  - Problem: [Was war kaputt]
-  - Analyse: [Deep Dive Zusammenfassung]
-  - Alternative: [Was ersetzt es]
-  - Migration: [Was geändert wurde]
-
-### Geändert  
-- **[Alternative Service]**: Erweitert um [Features]
-```
-
-2. **CLAUDE.md:**
-- Service aus Überwachungslisten entfernen
-- Architektur-Diagramme aktualisieren
-- Rollback-Prozedur hinzufügen
-
-3. **Rollback-Skript:**
-```bash
-# /usr/local/sbin/rollback-[service].sh
-# Created: 2026-02-XX
-# Restores [service] architecture
-systemctl enable [service]
-systemctl start [service]
-# ... weitere Schritte
-```
-
-#### 5. Rollback-Fähigkeit (PFLICHT!)
-
-**Jede Architekturänderung MUSS rückgängig machbar sein!**
-
-```bash
-# a) Config-Backup
-cp /etc/systemd/system/[service].service \
-   /etc/systemd/system/[service].service.backup-$(date +%Y%m%d)
-
-# b) Service nicht löschen, nur disablen!
-systemctl disable [service]
-mv /etc/systemd/system/[service].service \
-   /etc/systemd/system/[service].service.disabled
-
-# c) Dokumentiere Rollback
-echo "systemctl enable [service] && systemctl start [service]" \
-  > /usr/local/sbin/rollback-[service].sh
-chmod +x /usr/local/sbin/rollback-[service].sh
-```
-
-### Verboten ohne User-Genehmigung
-
-❌ **Service/Komponente löschen**
-❌ **Config-Dateien löschen** (nur umbenennen zu `.disabled`)
-❌ **Datenfluss umrouten** (ohne Analyse)
-❌ **Ports ändern** (Port-Konflikte erst beheben!)
-❌ **Dependencies entfernen** (könnte andere Services brechen)
-
-### Beispiel: zmq-decoder Entfernung (2026-02-06)
-
-**❌ Was falsch lief:**
-1. Keine Deep Dive Analyse kommuniziert
-2. Keine User-Rückfrage vor Architekturänderung
-3. Keine Telegram-Erklärung gesendet
-4. Keine Dokumentation erstellt
-5. Kein Rollback-Plan
-
-**✅ Was hätte passieren sollen:**
-1. Deep Dive: zmq-decoder Port-Konflikt mit atoms3-proxy (beide Port 4224)
-2. Analyse: atoms3-proxy hat alle Features die zmq-decoder braucht
-3. Telegram-Frage: "zmq-decoder entfernen? Port-Konflikt, atoms3-proxy reicht."
-4. Nach Genehmigung: Service auf `.disabled` umbenennen
-5. Dokumentation: CHANGELOG + CLAUDE.md Update
-6. Rollback-Skript: `/usr/local/sbin/rollback-zmq-decoder.sh`
-
----
----
-
-## 🔄 Koordination zwischen Reparatur-Mechanismen
-
-### Problem: Race Conditions zwischen automatischen Systemen
-
-**Vorher:** Drei unabhängige Reparatur-Mechanismen ohne Koordination:
-1. **systemd Auto-Restart** (sofort bei Crash)
-2. **feeder-watchdog** (alle 5min, exponentielles Backoff)
-3. **claude-respond-to-reports** (täglich 07:00 + Eskalationen)
-
-**Folge:** Mechanismen störten sich gegenseitig:
-- Watchdog repariert → Claude startet parallel neu
-- Claude baut Services um → Watchdog mischt sich ein
-- Boot: Watchdog startet zu früh → False Positives
-
-### Lösung: Intelligente Koordination (2026-02-03)
-
-#### 1. Boot-Grace-Period im Watchdog
-
-**Problem:** Watchdog läuft 2min nach Boot, aber Services brauchen länger:
-- ogn-rf: 10-15min FFTW Benchmarking
-- Dependencies: chronyd, gpsd, Netzwerk brauchen Zeit
-
-**Implementierung:**
-```bash
-BOOT_GRACE_MINUTES=20  # 20 Minuten nach Boot keine Reparaturen
-
-is_boot_grace_period() {
-    local uptime_seconds=$(awk '{print int($1)}' /proc/uptime)
-    local grace_seconds=$((BOOT_GRACE_MINUTES * 60))
-    
-    if [ "$uptime_seconds" -lt "$grace_seconds" ]; then
-        log "BOOT GRACE: System hochgefahren vor $((uptime_seconds / 60))min"
-        return 0  # In Grace Period
-    fi
-    return 1
-}
-```
-
-**Verhalten:**
-- Timer: `OnBootSec=2min` (Watchdog startet bei 2min)
-- **Erste 20min:** Watchdog läuft, prüft NUR, macht KEINE Reparaturen
-- **Nach 20min:** Normale Überwachung startet
-
-**Effekt:** ✅ Keine False Positives beim Boot mehr
-
-#### 2. wait_for_quiet() - Zentrale Koordination
-
-**Problem:** Claude-Wartung startete ohne auf andere Aktivitäten zu warten
-
-**Implementierung:** In `/usr/local/sbin/claude-respond-to-reports` (Zeile 43-167)
-
-**Prüft 9 Aktivitäts-Indikatoren:**
-
-| Check | Was wird erkannt | Wartezeit |
-|-------|------------------|-----------|
-| 1. Services activating | `systemctl list-units --state=activating` | Bis active |
-| 2. Watchdog kürzlich aktiv | Log-Check <2min | 2min |
-| **2b. Watchdog-Eskalationen** | `/var/run/feeder-watchdog/*.given_up` + aktiv <30s | 30s |
-| 3. Systemd-Restarts | ExecMainStartTimestamp <30s | 30s |
-| 4. Andere Claude-Wartung | Lock-File `/var/run/claude-respond.lock` | Bis fertig |
-| 5. /do Queue Worker | `pgrep do-queue-worker` | Bis fertig |
-| 6. Interaktive Claude Session | `pgrep "claude -p"` | Bis fertig |
-| 7. Config-Änderungen | `/etc/systemd/`, `/usr/local/sbin/` mtime <10min | 10min |
-| 8. systemd daemon-reload | Unit-File-Warnings | Bis reload |
-
-**Verhalten:**
-- **Max Wartezeit:** 10 Minuten
-- **Quiet-Counter:** 2 aufeinanderfolgende "ruhige" Checks (je 15s)
-- **User-Info:** Nach 5min Telegram-Benachrichtigung
-- **Timeout:** Nach 10min Start trotzdem (mit Warnung)
-
-**Besonderheit Watchdog-Eskalationen:**
-```bash
-if [ "$given_up_services" -gt 0 ]; then
-    # Informiere User warum Wartung läuft
-    telegram-notify "🔧 Wartung wegen Watchdog-Eskalation: $services"
-    
-    # Prüfe ob Watchdog GERADE aktiv ist
-    if [ "$watchdog_age" -lt 30 ]; then
-        issues+=("Watchdog repariert JETZT")
-        # Claude wartet bis Watchdog fertig ist
-    fi
-fi
-```
-
-#### 3. Koordinations-Matrix
-
-| Situation | systemd | Watchdog | Claude | Ergebnis |
-|-----------|---------|----------|--------|----------|
-| **Boot <20min** | 🟢 Normal | ⏸️ Überspringt | 🟢 Normal | ✅ Keine False Positives |
-| **Boot >20min** | 🟢 Normal | 🟢 Überwacht | 🟢 Normal | ✅ Alle aktiv |
-| **Service crashed** | 🔧 Restart (sofort) | 🟢 Wartet | 🟢 Wartet | ✅ systemd zuerst |
-| **systemd failed** | ⏸️ Gibt auf | 🔧 Repair (5min) | 🟢 Wartet | ✅ Watchdog versucht |
-| **Watchdog eskaliert** | ⏸️ - | 🚩 Aufgegeben | 🔧 Übernimmt | ✅ Claude repariert |
-| **Watchdog aktiv <30s** | 🟢 Normal | 🔧 Repariert | ⏳ **Wartet** | ✅ Keine Doppel-Reparatur |
-| **Interaktive Session** | 🟢 Normal | 🟢 Überwacht | ⏳ **Wartet** | ✅ Keine Störung |
-| **Alle ruhig** | 🟢 Normal | 🟢 Überwacht | 🟢 Arbeitet | ✅ Koordiniert |
-
-### Drei-Ebenen-Absicherung
-
-```
-┌─────────────────────────────────────────┐
-│ Ebene 1: systemd Auto-Restart           │
-│ - Restart=always: Sofort bei Crash      │
-│ - Restart=on-failure: Bei Exit ≠ 0      │
-│ - Reaktionszeit: Sekunden                │
-└─────────────────────────────────────────┘
-              ↓ (falls fehlschlägt)
-┌─────────────────────────────────────────┐
-│ Ebene 2: feeder-watchdog (alle 5min)    │
-│ - Boot-Grace: 20min nach Start          │
-│ - Exponentielles Backoff: 5→10→20→40min │
-│ - Eskalation nach 5h → Claude            │
-│ - Telegram-Benachrichtigungen            │
-└─────────────────────────────────────────┘
-              ↓ (nach 5h Versuchen)
-┌─────────────────────────────────────────┐
-│ Ebene 3: Claude-Wartung (07:00)         │
-│ - wait_for_quiet(): Prüft 9 Indikatoren │
-│ - Wartet auf Ruhe (max 10min)           │
-│ - Intelligente Reparatur + Analyse       │
-└─────────────────────────────────────────┘
-```
-
-### Dateien
-
-| Datei | Funktion | Änderung |
-|-------|----------|----------|
-| `/usr/local/sbin/feeder-watchdog` | Watchdog mit Boot-Grace | `BOOT_GRACE_MINUTES=20`, `is_boot_grace_period()` |
-| `/usr/local/sbin/claude-respond-to-reports` | Claude mit wait_for_quiet | `wait_for_quiet()` (Zeile 43-167) |
-| `/var/run/feeder-watchdog/*.given_up` | Eskalations-Marker | Watchdog legt an, Claude prüft |
-| `/var/run/claude-watchdog-escalation-aware` | Eskalations-Info-Marker | Claude legt einmalig an |
-
-### Logs & Debugging
-
-```bash
-# Boot-Grace im Watchdog sehen
-sudo grep "BOOT GRACE" /var/log/feeder-watchdog.log
-
-# wait_for_quiet Aktivität
-sudo grep "wait_for_quiet\|Warte auf Ruhe" /var/log/claude-maintenance/response-*.log
-
-# Eskalationen prüfen
-ls /var/run/feeder-watchdog/*.given_up 2>/dev/null
-
-# Watchdog letzte Aktivität
-sudo tail -50 /var/log/feeder-watchdog.log | grep -E "VERSUCH|OK|FEHLER"
-```
-
-### Test-Befehle
-
-```bash
-# Boot-Grace testen (simuliere kurze Uptime)
-awk '{print int($1/60)}' /proc/uptime  # Aktuelle Uptime in Minuten
-
-# Eskalation simulieren
-sudo touch /var/run/feeder-watchdog/test-service.given_up
-# Claude-Wartung würde erkennen und warten
-
-# Cleanup
-sudo rm /var/run/feeder-watchdog/test-service.given_up
-```
-
-**Status:** ✅ Alle drei Ebenen koordiniert seit 2026-02-03
-
-
 
 ## Drei getrennte Luftverkehrs-Datenströme
 
@@ -780,7 +592,7 @@ RTL-SDR (1090 MHz) → readsb → Upload Feeds + MLAT → tar1090
 ### 2. OGN/FLARM (868 MHz) - Segelflugzeuge & Gleitschirme
 ```
 Upload: RTL-SDR V4 → ogn-rf → ogn-decode → glidernet.org (APRS)
-                              (auto-restart alle 15s)
+                              (VirusPilot ARM64 Build)
                                       ↓
 Empfang:                    ogn2dump1090 (100km-Filter)
                                       ↓
@@ -789,12 +601,13 @@ Empfang:                    ogn2dump1090 (100km-Filter)
 **Was:** Segelflugzeuge, Motorsegler, Gleitschirme, Drachen
 **Reichweite Upload:** ~100 km (eigene RF-Empfänge)
 **Reichweite Empfang:** 100 km Radius (APRS-Filter)
-**Upload:** ✅ **Station "SteGau" trägt zur Community bei** (trotz ogn-decode-Crashes)
+**Upload:** ✅ **Station "SteGau" online und stabil** (VirusPilot ARM64 Binary)
 **Lokal:** tar1090 Visualisierung (separate Tracks mit `~` Präfix)
 **MLAT:** Nein (OGN nutzt eigenes APRS-Netzwerk)
-**Status:** ✅ Aktiv (Auto-Restart-Workaround für ARM64-Bugs)
+**Status:** ✅ Aktiv (VirusPilot ARM64 Build löst Crash-Problem)
 **Live-Karte:** http://live.glidernet.org/receiver-status/?id=SteGau
-**Besonderheit:** ogn-decode crasht nach ~10s, aber APRS-Upload funktioniert in dieser Zeit
+**Binary:** v0.3.2.arm64 (22. März 2024, VirusPilot/ogn-pi34)
+**Fix-Datum:** 2026-02-10 (vorher: Crashes alle ~20s, jetzt stabil)
 
 ### 3. Remote ID (BLE/WiFi) - Drohnen
 ```
@@ -824,7 +637,7 @@ ODER: ESPHome Proxy (BLE) → ha-opendroneid → Home Assistant (MQTT)
 
 ---
 
-## Überwachte Services (29)
+## Überwachte Services (28)
 *Bot, Watchdog, Wartung müssen synchron sein und nach Kategorien trennen!*
 
 ### Core ADS-B (1)
@@ -850,8 +663,8 @@ dragonsync, atoms3-proxy
 ### Alert Services (3)
 aircraft-alert-notifier, ogn-balloon-notifier, drone-alert-notifier
 
-### GPS Services (4)
-ntripcaster, ntrip-proxy, chronyd, gps-mqtt-publisher
+### GPS Services (3)
+ntripcaster, ntrip-proxy, chronyd
 
 
 **Sonderfall:** `wifi-presence-detector` wird separat überwacht (nur wenn atoms3-proxy läuft)
@@ -1009,3 +822,36 @@ Siehe `~/docs/LESSONS-LEARNED.md` für gesammelte Erkenntnisse:
 - Security Best Practices
 - Protokoll-Besonderheiten (NTRIP, APRS, ADS-B, Remote ID)
 - Hardware-Debugging (ESP32, RTL-SDR, GPS)
+
+---
+
+## 💾 Backup Best Practices
+
+### System-Skripte sichern
+**WICHTIG:** Nutze `/var/backups/scripts/` statt `/tmp/` für Backups!
+
+```bash
+# ✅ KORREKT - Permanenter Ort
+sudo mkdir -p /var/backups/scripts/
+sudo cp /usr/local/sbin/<script> "/var/backups/scripts/<script>.backup-$(date +%Y%m%d-%H%M%S)"
+
+# ❌ FALSCH - Wird durch systemd-tmpfiles gelöscht (nach ~10 Tagen)
+sudo cp /usr/local/sbin/<script> /tmp/<script>.backup
+```
+
+### Warum /var/backups/?
+- ✅ Standard-Location für System-Backups (dpkg, apt nutzen dies auch)
+- ✅ Persistent (überlebt Reboots und tmpfiles cleanup)
+- ✅ Root-owned, geschützt
+- ✅ Zeitstempel im Dateinamen für klare Versionierung
+
+### Backup-Cleanup (optional)
+```bash
+# Backups älter als 30 Tage automatisch löschen
+find /var/backups/scripts/ -name "*.backup-*" -mtime +30 -delete
+```
+
+### Aktuelle Backups prüfen
+```bash
+ls -lh /var/backups/scripts/
+```
