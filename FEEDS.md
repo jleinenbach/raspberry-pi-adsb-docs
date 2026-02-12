@@ -15,18 +15,18 @@
 
 ### FlightAware (piaware)
 - **Config:** automatisch via piaware-config
-- **MLAT:** Aktiv (Rückkanal → mlathub:39004)
+- **MLAT:** Aktiv (Rückkanal → readsb:30104)
 
 ### Flightradar24 (fr24feed)
 - **Config:** /etc/fr24feed.ini
 
 ### ADS-B Exchange
 - **Config:** /etc/default/adsbexchange
-- **MLAT:** Aktiv (Rückkanal → mlathub:39004)
+- **MLAT:** Aktiv (Rückkanal → readsb:30104)
 
 ### adsb.fi
 - **Config:** /etc/default/adsbfi
-- **MLAT:** Aktiv (Rückkanal → mlathub:39004)
+- **MLAT:** Aktiv (Rückkanal → readsb:30104)
 
 ### OpenSky Network
 - **Username:** jens.leinenbach@gmail.com
@@ -47,7 +47,7 @@
 - **Username:** jens76-stegaurach
 - **Config:** /etc/default/airplanes
 - **Server:** feed.airplanes.live:30004 (Feed), :31090 (MLAT)
-- **MLAT:** Aktiv (60+ Peers, Rückkanal → mlathub:39004)
+- **MLAT:** Aktiv (60+ Peers, Rückkanal → readsb:30104)
 - **Statistik:** https://airplanes.live/myfeed/
 - **Update:** `sudo bash /usr/local/share/airplanes/git/update.sh`
 
@@ -68,7 +68,8 @@
 
 ---
 
-## MLAT-Architektur (mit mlathub)
+## MLAT-Architektur (direkt ohne Hub)
+**Status:** ✅ Option 1 aktiv seit 2026-02-12
 
 ### Was ist MLAT?
 Multilateration berechnet Positionen von Flugzeugen **ohne ADS-B** (nur Mode-S Transponder).
@@ -89,7 +90,7 @@ von mehreren Empfängern - **nicht lokal**.
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Lokale Architektur (2026-01-26)
+### Lokale Architektur (2026-02-12)
 ```
   ┌─────────────────────────────────────────────────────────────┐
   │  MLAT-Server (extern)                                       │
@@ -104,8 +105,8 @@ von mehreren Empfängern - **nicht lokal**.
   │  LOKAL                                                      │
   │                                                             │
   │  adsbexchange-mlat ──┐                                      │
-  │  adsbfi-mlat ────────┼──► mlathub:39004 ──► readsb:30104   │
-  │  airplanes-mlat ─────┤    (dedupliziert)                    │
+  │  adsbfi-mlat ────────┼──► readsb:30104 (remote=1 ✓)        │
+  │  airplanes-mlat ─────┤                                      │
   │  piaware-mlat ───────┘                                      │
   │                                    │                        │
   │                                    ▼                        │
@@ -117,35 +118,12 @@ von mehreren Empfängern - **nicht lokal**.
   └─────────────────────────────────────────────────────────────┘
 ```
 
-### Warum mlathub?
-| Ohne mlathub | Mit mlathub |
-|--------------|-------------|
-| 4 Server senden je eigene Position | 4 Server senden je eigene Position |
-| readsb empfängt 4x gleiches Flugzeug | mlathub **dedupliziert** |
-| Mögliche Konflikte | Sauberer einzelner Datenstrom |
-
-### Wie funktioniert die Deduplizierung?
-Der mlathub (readsb-Instanz) wählt **NICHT** das genaueste Ergebnis aus.
-Er verwendet das **neueste gültige** Ergebnis:
-
-```
-12:00:00.100  Server A: (49.866, 10.839) → Akzeptiert
-12:00:00.150  Server B: (49.867, 10.840) → Ersetzt A (neuer)
-12:00:00.200  Server C: (49.868, 10.841) → Ersetzt B (neuer)
-12:00:00.250  Server D: (10.000, 50.000) → Abgelehnt (speed_check: unmöglich)
-```
-
-| Prüfung | Beschreibung |
-|---------|--------------|
-| **Zeitstempel** | Neuere Daten ersetzen ältere |
-| **speed_check** | Ist Bewegung physikalisch möglich? (Distanz/Zeit) |
-| **Quellenhierarchie** | ADS-B > MLAT > TIS-B (MLAT vs MLAT = gleichwertig) |
-
-**Nicht implementiert:**
-- Genauigkeitsvergleich zwischen Servern
-- Gewichtung nach Anzahl der beteiligten Empfänger
-- Mittelwertbildung mehrerer Positionen
-- Auswahl nach Unsicherheitsmetrik (nicht in Beast-Daten enthalten)
+**Warum direkt ohne mlathub?**
+- ✅ `remote=1` garantiert (INBOUND-Verbindungen zu readsb)
+- ✅ MAGIC_MLAT_TIMESTAMP bleibt erhalten → korrekte MLAT-Erkennung
+- ✅ Einfachere Architektur, weniger Fehlerquellen
+- ✅ readsb dedupliziert selbst (nimmt neueste Position per Zeitstempel)
+- ℹ️ Theoretisch 4x gleiche Position möglich (in der Praxis selten, da Server meist unterschiedliche Flugzeuge tracken)
 
 ### Was verbessert MLAT-Genauigkeit wirklich?
 | Faktor | Einfluss | Lokal umsetzbar? |
@@ -156,36 +134,19 @@ Er verwendet das **neueste gültige** Ergebnis:
 | **Besserer Empfang** (Gain/Antenne) | ⬆️ Mehr Signale erkannt | Bereits optimiert |
 | **Eigener MLAT-Server** | ⬆️ Volle Kontrolle | Sehr komplex |
 
-### Theoretisch: Intelligente MLAT-Fusion
-Ein hypothetischer "Smart MLAT Aggregator" könnte:
-```
-Server A: (49.866, 10.839) basierend auf 3 Empfänger
-Server B: (49.867, 10.840) basierend auf 8 Empfänger  ← Höher gewichten
-Server C: (49.868, 10.841) basierend auf 5 Empfänger
-                          ↓
-              Gewichteter Mittelwert = präzisere Position
-```
-
-**Problem:** MLAT-Server liefern keine Metadaten (Unsicherheit, Empfängeranzahl) im Beast-Protokoll.
-Solche Fusion würde direkten Server-Zugang oder API-Integration erfordern.
-
-### Fazit
-Der mlathub ist eine **Hygiene-Maßnahme** für saubere Datenanzeige, keine Qualitätsverbesserung.
-Die MLAT-Genauigkeit wird ausschließlich durch die externen Server und die Empfänger-Community bestimmt.
-
 ### Prüfbefehle
 ```bash
 # MLAT-Dienste Status
-systemctl is-active adsbexchange-mlat adsbfi-mlat airplanes-mlat
+systemctl is-active adsbexchange-mlat adsbfi-mlat airplanes-mlat piaware
 
-# mlathub Status
-systemctl status mlathub
+# MLAT-Verbindungen zu readsb (sollte 4 zeigen)
+ss -tn | grep ':30104.*ESTAB' | wc -l
 
-# Verbindungen zum mlathub (sollte 4 zeigen)
-ss -tnp | grep -c ':39004.*ESTAB'
+# MLAT-Daten in aircraft.json
+python3 -c "import json; data=json.load(open('/run/readsb/aircraft.json')); mlat=[p for p in data['aircraft'] if p.get('mlat')]; print(f'MLAT: {len(mlat)} Flugzeuge')"
 
-# mlathub → readsb Verbindung
-ss -tnp | grep 'mlathub.*30104'
+# MLAT-Client Aktivität
+sudo journalctl -u adsbexchange-mlat --since "5 minutes ago" | grep "Results:"
 ```
 
 ---
