@@ -22,11 +22,10 @@
 
 ## 🛩️ Active Services (21 Total)
 
-### ADS-B Feeders (18 Services)
+### ADS-B Feeders (17 Services)
 - **Primary Decoder:** readsb
-- **MLAT Hub:** Dedicated deduplication (4 clients → readsb)
 - **Upload Feeds (9):** piaware, fr24feed, adsbexchange, adsb.fi, opensky, theairtraffic, rbfeeder, airplanes.live, pfclient
-- **MLAT Services (4):** mlathub, adsbexchange-mlat, adsbfi-mlat, airplanes-mlat
+- **MLAT Services (3):** adsbexchange-mlat, adsbfi-mlat, airplanes-mlat (direkt zu readsb:30104)
 - **Web Services (3):** tar1090, graphs1090, adsbexchange-stats
 
 ### OGN/FLARM (3 Services - ✅ Active)
@@ -49,9 +48,9 @@
 
 ## 📊 Key Stats
 
-- **Services:** 21 systemd services (18 ADS-B, 3 OGN, 1 DragonSync)
+- **Services:** 20 systemd services (17 ADS-B, 3 OGN, 1 DragonSync)
 - **Upload Feeds:** 9 ADS-B feeders + 1 OGN (glidernet.org)
-- **MLAT:** 4 MLAT clients → centralized mlathub deduplication
+- **MLAT:** 3 MLAT clients → direct to readsb:30104
 - **Hardware:** 2× RTL-SDR (1090 MHz ADS-B + 868 MHz OGN V4), ESP32 AtomS3 (BLE Remote ID)
 - **Security:** Hardened kernel, AppArmor (9 profiles), systemd sandboxing, voltage monitoring
 - **Automation:** Claude AI-assisted maintenance via Telegram

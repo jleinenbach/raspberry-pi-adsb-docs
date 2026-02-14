@@ -327,7 +327,7 @@ OGN_COUNT=$(journalctl -u rtl-ogn --since "1 hour ago" | grep -c "APRS\|Position
 |-----------|----------|--------|
 | Core ADS-B | readsb | 1 |
 | Upload Feeds | piaware, fr24feed, ... | 9 |
-| MLAT Services | mlathub, adsbexchange-mlat, ... | 4 |
+| MLAT Services | adsbexchange-mlat, adsbfi-mlat, airplanes-mlat | 3 |
 | Web Services | tar1090, graphs1090, adsbexchange-stats | 3 |
 | DragonSync | dragonsync | 1 |
 | **OGN Services (NEU)** | **rtl-ogn, ogn2dump1090** | **2** |

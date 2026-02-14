@@ -135,7 +135,7 @@ Die Services sind nach Funktion kategorisiert:
 |-----------|----------|--------|
 | **Core ADS-B** | readsb | 1 |
 | **Upload Feeds** | piaware, fr24feed, adsbexchange-feed, adsbfi-feed, opensky-feeder, theairtraffic-feed, rbfeeder, airplanes-feed, pfclient | 9 |
-| **MLAT** | mlathub, adsbexchange-mlat, adsbfi-mlat, airplanes-mlat | 4 |
+| **MLAT** | adsbexchange-mlat, adsbfi-mlat, airplanes-mlat | 3 |
 | **Web** | tar1090, graphs1090, adsbexchange-stats | 3 |
 | **DragonSync** | dragonsync | 1 |
 

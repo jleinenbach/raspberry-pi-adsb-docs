@@ -9,7 +9,7 @@ set -o pipefail
 #===============================================================================
 
 DEPENDENCIES="NetworkManager chronyd dbus systemd-udevd"
-FEEDERS="readsb piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat tar1090 graphs1090 adsbexchange-stats ogn-rf-procserv ogn-decode-procserv ogn2dump1090 dragonsync aircraft-alert-notifier ogn-balloon-notifier drone-alert-notifier"
+FEEDERS="readsb piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient adsbexchange-mlat adsbfi-mlat airplanes-mlat tar1090 graphs1090 adsbexchange-stats ogn-rf-procserv ogn-decode-procserv ogn2dump1090 dragonsync aircraft-alert-notifier ogn-balloon-notifier drone-alert-notifier"
 LOG="/var/log/feeder-watchdog.log"
 FAIL_DIR="/var/run/feeder-watchdog"
 MAX_FAILURES=6

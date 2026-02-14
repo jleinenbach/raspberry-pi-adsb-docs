@@ -274,7 +274,7 @@ sudo dmesg --since "10 minutes ago" | grep "apparmor.*DENIED"
 # Sollte leer sein
 
 # Alle Services laufen
-systemctl is-active readsb rbfeeder pfclient piaware mlathub
+systemctl is-active readsb rbfeeder pfclient piaware
 systemctl is-active ogn-rf-procserv ogn-decode-procserv ogn2dump1090
 # Alle sollten "active" sein
 

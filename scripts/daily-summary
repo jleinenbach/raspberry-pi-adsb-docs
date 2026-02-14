@@ -70,7 +70,7 @@ fi
 # Service Status (20 Services nach Kategorien)
 SERVICE_OK=0
 SERVICE_FAIL=""
-for svc in readsb piaware fr24feed adsbexchange-feed adsbexchange-mlat adsbexchange-stats tar1090 graphs1090 adsbfi-feed adsbfi-mlat opensky-feeder theairtraffic-feed rbfeeder airplanes-feed airplanes-mlat pfclient mlathub ogn-rf-procserv ogn-decode-procserv ogn2dump1090 dragonsync; do
+for svc in readsb piaware fr24feed adsbexchange-feed adsbexchange-mlat adsbexchange-stats tar1090 graphs1090 adsbfi-feed adsbfi-mlat opensky-feeder theairtraffic-feed rbfeeder airplanes-feed airplanes-mlat pfclient ogn-rf-procserv ogn-decode-procserv ogn2dump1090 dragonsync; do
     if systemctl is-active "$svc" &>/dev/null; then
         ((SERVICE_OK++))
     else

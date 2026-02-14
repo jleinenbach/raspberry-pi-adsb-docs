@@ -51,13 +51,13 @@ sudo grep -i "warning" /var/log/rkhunter.log 2>/dev/null | tail -10
 sudo cat /var/log/claude-maintenance/response-$(date +%Y-%m-%d).log 2>/dev/null | tail -60
 sudo tail -20 /var/log/feeder-watchdog.log 2>/dev/null
 
-# Services (21 Services nach Kategorie)
+# Services (20 Services nach Kategorie)
 # Core ADS-B
 systemctl is-active readsb
 # Upload Feeds (9)
 systemctl is-active piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient
-# MLAT Services (4)
-systemctl is-active mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat
+# MLAT Services (3)
+systemctl is-active adsbexchange-mlat adsbfi-mlat airplanes-mlat
 # Web Services (3)
 systemctl is-active tar1090 graphs1090 adsbexchange-stats
 # OGN Services (3)
@@ -430,22 +430,6 @@ MLAT-Positionen erscheinen im tar1090 MLAT-Filter **NUR** wenn:
 Die MLAT-Clients empfangen ~12-30 pos/min, aber diese sind meist für Flugzeuge mit ADS-B
 (zur Redundanz). Im JSON erscheinen nur Positionen für Mode-S-only Flugzeuge.
 
-### Rollback zu mlathub (falls nötig)
-```bash
-# 1. mlathub reaktivieren
-sudo systemctl enable mlathub
-sudo systemctl start mlathub
-
-# 2. MLAT-Clients umkonfigurieren (30104 → 39004)
-sudo sed -i 's/:30104/:39004/g' /etc/default/{airplanes,adsbfi,adsbexchange} /etc/piaware.conf
-sudo systemctl restart adsbexchange-mlat adsbfi-mlat airplanes-mlat piaware
-
-# 3. mlathub wieder in Watchdog aufnehmen
-# In /usr/local/sbin/feeder-watchdog: "mlathub" zur FEEDERS-Liste hinzufügen
-
-# 4. Backups falls nötig
-ls -lh /var/backups/scripts/*.backup-20260212*
-```
 
 **Diagnose:**
 ```bash
@@ -645,7 +629,7 @@ ODER: ESPHome Proxy (BLE) → ha-opendroneid → Home Assistant (MQTT)
 
 ---
 
-## Überwachte Services (28)
+## Überwachte Services (27)
 *Bot, Watchdog, Wartung müssen synchron sein und nach Kategorien trennen!*
 
 ### Core ADS-B (1)

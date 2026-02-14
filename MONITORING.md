@@ -115,45 +115,22 @@ dmesg | grep -iE 'mmcblk.*error|mmc0.*timeout'
 
 ---
 
-## MLAT-Hub (2026-01-26)
-*Dedupliziert MLAT-Ergebnisse von 4 Clients*
-
-**Service:** `mlathub.service` (zweite readsb-Instanz)
-**Config:** `/etc/systemd/system/mlathub.service`
-
-### Ports
-| Port | Richtung | Beschreibung |
-|------|----------|--------------|
-| 39004 | Input | Beast von MLAT-Clients |
-| 39005 | Output | Beast (für Debugging) |
-| → 30104 | Output | An readsb (dedupliziert) |
+## MLAT-Empfang (2026-02-12, mlathub entfernt 2026-02-14)
+*MLAT-Clients verbinden direkt zu readsb*
 
 ### Verbundene Clients
-| Client | Konfiguration |
-|--------|---------------|
-| adsbexchange-mlat | `/etc/default/adsbexchange` |
-| adsbfi-mlat | `/etc/default/adsbfi` |
-| airplanes-mlat | `/etc/default/airplanes` |
-| piaware (fa-mlat-client) | `/etc/piaware.conf` |
+| Client | Port | Konfiguration |
+|--------|------|---------------|
+| adsbexchange-mlat | → 30104 | `/etc/default/adsbexchange` |
+| adsbfi-mlat | → 30104 | `/etc/default/adsbfi` |
+| airplanes-mlat | → 30104 | `/etc/default/airplanes` |
+| piaware (fa-mlat-client) | → 30104 | `/etc/piaware.conf` |
 
 ### Prüfbefehle
 ```bash
-# Service-Status
-systemctl status mlathub
-
-# Anzahl verbundener Clients (sollte 4 sein)
-ss -tnp | grep ':39004.*ESTAB' | wc -l
-
-# Verbindung zu readsb
-ss -tnp | grep 'readsb.*30104.*ESTAB'
-
-# Journal
-journalctl -u mlathub --since "10 minutes ago"
+# MLAT-Verbindungen prüfen (sollte 4 zeigen)
+ss -tn | grep ':30104.*ESTAB' | wc -l
 ```
-
-### Abhängigkeiten
-- Startet nach: `readsb.service`
-- Gebunden an: `readsb.service` (stoppt wenn readsb stoppt)
 
 ---
 

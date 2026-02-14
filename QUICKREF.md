@@ -10,7 +10,7 @@
 # Vollständiger Status
 systemctl is-active readsb piaware fr24feed adsbexchange-feed adsbfi-feed \
   opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient \
-  mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat \
+  adsbexchange-mlat adsbfi-mlat airplanes-mlat \
   tar1090 graphs1090 adsbexchange-stats \
   ogn-rf-procserv ogn-decode-procserv ogn2dump1090 \
   dragonsync atoms3-proxy \

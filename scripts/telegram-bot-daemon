@@ -308,7 +308,7 @@ get_status() {
     # Service-Kategorien (24 Services + zmq-decoder bedingt)
     local CORE_SERVICES="readsb"
     local FEED_SERVICES="piaware fr24feed adsbexchange-feed adsbfi-feed opensky-feeder theairtraffic-feed rbfeeder airplanes-feed pfclient"
-    local MLAT_SERVICES="mlathub adsbexchange-mlat adsbfi-mlat airplanes-mlat"
+    local MLAT_SERVICES="adsbexchange-mlat adsbfi-mlat airplanes-mlat"
     local WEB_SERVICES="tar1090 graphs1090 adsbexchange-stats"
     local DRONE_SERVICES="dragonsync"
     local OGN_SERVICES="ogn-rf-procserv ogn-decode-procserv ogn2dump1090"
