@@ -1,7 +1,7 @@
 # Maintenance History
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-03
+**Letzte Aktualisierung:** 2026-02-14
 
 Dokumentation von abgelehnten und ausstehenden Wartungsempfehlungen.
 
@@ -40,6 +40,21 @@ Dokumentation von abgelehnten und ausstehenden Wartungsempfehlungen.
 | Source | Recommendation | Risk |
 |--------|----------------|------|
 | *Keine* | Alle Systeme funktional | - |
+
+## Recent Issues Resolved (2026-02-14)
+
+### Wartungs-Telegram stumm nach daily-summary
+**Problem:** Täglicher Bericht meldete "Wartung startet in 5 min" → danach keine Rückmeldung
+**Root Cause:** Techniker-Claude Output ohne `[TELEGRAM:OK]` Tag → Parsing griff nicht → kein Telegram
+**Fix:** Fallback else-Zweig in `claude-respond-to-reports` - sendet immer eine Benachrichtigung
+**Status:** ✅ Resolved
+
+### mlathub-Referenzen in Skripten und Dokumentation
+**Problem:** mlathub seit 2026-02-12 deaktiviert, aber noch in daily-summary, telegram-bot, claude-respond und 10+ Docs referenziert → daily-summary zeigte 20/21 statt 20/20
+**Fix:** Alle Referenzen aus aktiven Skripten und Dokumentation entfernt
+**Status:** ✅ Resolved
+
+---
 
 ## Recent Issues Resolved (2026-02-03)
 
@@ -546,3 +561,84 @@ Watchdog-Log aktiv vor 15s → Claude wartet ✅
 **Status:** ✅ Implemented - Boot-Grace + Eskalations-Koordination aktiv
 
 ---
+
+## 2026-02-11: Wartungsskript-Robustheit verbessert
+
+### Problem
+Tägliche Wartung schlug mit Exit 1 fehl ohne hilfreiche Fehlermeldung:
+1. **False-Positive OGN Update**: GitHub Release Tag `v0.6` wurde fälschlicherweise mit Binary-Version `v0.3.2.arm64` verglichen
+2. **Kein API-Limit-Handling**: Bei erschöpftem Anthropic API-Limit gab es nur die Meldung "You're out of extra usage", aber keine saubere Behandlung
+
+### Implementierte Fixes
+
+#### Fix 1: OGN Binary Check korrigiert
+**Problem:** Vergleich von GitHub Release Tag mit Binary-Version führte zu False Positives
+
+**Vorher:**
+```bash
+LATEST_OGN_RELEASE=$(curl -s https://api.github.com/repos/VirusPilot/ogn-pi34/releases/latest | grep '"tag_name"')
+# Verglich v0.6 (Repository-Tag) mit v0.3.2.arm64 (Binary) → Inkompatibel!
+```
+
+**Nachher:**
+```bash
+UPSTREAM_BINARY_VERSION=$(curl -sL https://github.com/VirusPilot/ogn-pi34/raw/master/rtlsdr-ogn-bin-arm64-0.3.2_Bullseye.tgz | \
+    tar -xzOf - rtlsdr-ogn-0.3.2/ogn-decode | \
+    strings | grep -o 'v0\.[0-9]\.[0-9]\.arm64')
+# Prüft tatsächliche Binary-Version im Tarball → Korrekt!
+```
+
+**Test:**
+- Aktuell: v0.3.2.arm64
+- Upstream: v0.3.2.arm64
+- Ergebnis: ✅ Keine Updates (korrekt)
+
+#### Fix 2: API-Limit-Handling
+**Problem:** Bei erschöpftem API-Limit gab es nur Exit 1 ohne klare Diagnose
+
+**Lösung:**
+```bash
+# Nach Claude-Aufruf (claude-respond-to-reports:943)
+if echo "$CLAUDE_OUTPUT" | grep -qi "out of.*usage"; then
+    RESET_INFO=$(echo "$CLAUDE_OUTPUT" | grep -o "resets.*" | head -1)
+    log "⚠️  API-Limit erreicht"
+    telegram-notify "⚠️ Wartung übersprungen - API-Limit erreicht. Nächster Reset: $RESET_INFO"
+    exit 0  # Kein harter Fehler, sondern erwarteter Zustand
+fi
+```
+
+**Verhalten:**
+- Erkennt "out of extra usage" / "out of usage"
+- Telegram-Benachrichtigung mit Reset-Zeitpunkt
+- Exit 0 (kein Fehler-Status)
+- Wartungs-Watchdog triggert nicht (Exit 0 → OK)
+- Wartung wird beim nächsten Reset automatisch fortgesetzt
+
+### Verifizierung
+- ✅ Bash-Syntax validiert
+- ✅ OGN Check getestet (keine False Positives mehr)
+- ✅ Wartungs-Watchdog kompatibel (Exit 0 + keine ERROR-Meldung)
+- ✅ Backup: `/tmp/claude-respond-to-reports.backup`
+
+### Status
+**✅ Implementiert** - Nächste Wartung wird robuster sein
+
+### Backup-Location korrigiert
+**Problem:** Ursprüngliches Backup in `/tmp/` würde durch systemd-tmpfiles gelöscht
+
+**Lösung:** 
+- Backup verschoben nach `/var/backups/scripts/` (permanenter Ort)
+- Naming Schema: `<script>.backup-YYYYMMDD-HHMMSS`
+- Aktuelles Backup: `/var/backups/scripts/claude-respond-to-reports.backup-20260211-083554`
+
+**Best Practice für zukünftige Skript-Backups:**
+```bash
+sudo mkdir -p /var/backups/scripts/
+sudo cp <script> "/var/backups/scripts/<script>.backup-$(date +%Y%m%d-%H%M%S)"
+```
+
+**Cleanup (optional):**
+```bash
+# Backups älter als 30 Tage löschen
+find /var/backups/scripts/ -name "*.backup-*" -mtime +30 -delete
+```

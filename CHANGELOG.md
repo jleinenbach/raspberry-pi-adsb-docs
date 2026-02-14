@@ -1,9 +1,210 @@
 # System Changelog
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-09
+**Letzte Aktualisierung:** 2026-02-14
 
 Chronologische Historie aller implementierten System-Änderungen.
+
+
+## 2026-02-14 - mlathub entfernt + Wartungs-Telegram-Fix
+
+### Änderung 1: mlathub-Service entfernt
+mlathub (zweite readsb-Instanz zur MLAT-Deduplizierung) wurde am 2026-02-12 durch direkte
+Verbindungen der MLAT-Clients zu readsb:30104 ersetzt. Die Referenzen waren aber in vielen
+Skripten und Dokumentationen verblieben.
+
+**Entfernt aus:**
+- `/usr/local/sbin/daily-summary` - Service-Liste + SERVICE_TOTAL 21→20
+- `/usr/local/sbin/telegram-bot-daemon` - MLAT_SERVICES (2 Stellen)
+- `/usr/local/sbin/claude-respond-to-reports` - Service-Schleife
+- `CLAUDE.md` (root) - MLAT-Sektion komplett neu geschrieben
+- `docs/CLAUDE.md` - Status-Check, Rollback-Sektion entfernt
+- `docs/MONITORING.md` - mlathub-Sektion → MLAT-Empfang Sektion
+- `docs/README.md`, `QUICKREF.md`, `TROUBLESHOOTING.md`, `OGN-HARDWARE-INTEGRATION.md`
+- `docs/scripts/` - Alle Script-Kopien synchronisiert
+
+**Service-Zähler aktualisiert:**
+- MLAT Services: 4 → 3
+- Überwachte Services: 28 → 27
+- Status-Check Services: 21 → 20
+
+**Aktuelle MLAT-Architektur:**
+```
+adsbexchange-mlat ─┐
+adsbfi-mlat ───────┼──► readsb:30104 (remote=1 ✓)
+airplanes-mlat ────┤
+piaware-mlat ──────┘
+```
+
+### Änderung 2: Telegram-Fallback für Wartungsergebnis
+**Problem:** Täglicher Bericht (06:55) kündigte "Wartung startet in 5 min" an,
+aber nach der Wartung kam keine Telegram-Rückmeldung. User dachte, Wartung sei
+nicht gelaufen.
+
+**Ursache:** Die Wartung lief erfolgreich (07:08-07:13, Exit 0), aber der
+Techniker-Claude gab `"Wartung abgeschlossen. System ist gesund."` aus - ohne
+den erforderlichen `[TELEGRAM:OK]` Tag. Das Parsing in `claude-respond-to-reports`
+(Zeile 1027) fand keinen Tag → keine Benachrichtigung.
+
+**Fix:** `else`-Zweig in `/usr/local/sbin/claude-respond-to-reports` hinzugefügt
+(nach Zeile 1044). Wenn weder `[TELEGRAM:OK]` noch `[TELEGRAM:ERROR]` gefunden wird:
+- Bei Exit 0: Letzte Textzeile als Zusammenfassung senden
+- Bei Exit ≠ 0: Fehlermeldung mit Exit-Code senden
+
+---
+
+## 2026-02-10 - OGN: VirusPilot ARM64 Binary Installation
+
+### Problem
+- ogn-decode (v0.3.2) crashte alle ~20 Sekunden auf ARM64 (Raspberry Pi 4)
+- Beacon-Intervall: 300 Sekunden (5 Minuten)
+- Station "SteGau" nie lange genug stabil, um ersten Beacon zu senden
+- APRS-Verbindung funktionierte, aber 0 KB gesendet
+
+### Ursache
+- Originales ogn-decode Binary für 32-bit armhf kompiliert
+- Bekanntes Problem auf ARM64 (GitHub Issues #43, #33, #11)
+- Binary ist closed source (Privacy/Security), kann nicht selbst kompiliert werden
+
+### Lösung: VirusPilot ARM64 Build
+VirusPilot (GitHub: VirusPilot/ogn-pi34) stellt vorkompilierte ARM64 Binaries bereit.
+
+**Installation:**
+```bash
+# Download
+cd /tmp
+wget https://github.com/VirusPilot/ogn-pi34/raw/master/rtlsdr-ogn-bin-arm64-0.3.2_Bullseye.tgz
+
+# Backup
+sudo cp -a /opt/rtlsdr-ogn /opt/rtlsdr-ogn.backup-before-viruspilot
+
+# Stop Services
+sudo systemctl stop ogn-decode-procserv ogn-rf-procserv
+
+# Extract & Install
+tar -xzf rtlsdr-ogn-bin-arm64-0.3.2_Bullseye.tgz
+sudo cp rtlsdr-ogn-0.3.2/ogn-decode /opt/rtlsdr-ogn-0.3.2/ogn-decode
+sudo cp rtlsdr-ogn-0.3.2/ogn-rf /opt/rtlsdr-ogn-0.3.2/ogn-rf
+
+# Start Services
+sudo systemctl start ogn-rf-procserv ogn-decode-procserv
+```
+
+**Binary-Architektur:**
+```
+ogn-decode: ELF 64-bit LSB pie executable, ARM aarch64
+ogn-rf:     ELF 64-bit LSB pie executable, ARM aarch64
+```
+
+**Build-Info:**
+- Version: RTLSDR-OGN 0.3.2.arm64
+- Build-Datum: 22. März 2024
+- Quelle: VirusPilot/ogn-pi34 (master branch)
+
+### Ergebnis
+
+**✅ ogn-decode läuft stabil:**
+- Uptime: >12 Minuten (vorher: maximal 20 Sekunden)
+- Keine Crashes mehr
+- CPU-Last: ~16% (normal)
+
+**✅ APRS-Verbindung funktioniert bidirektional:**
+- Verbunden mit: 51.68.189.96:14580 (aprs.glidernet.org)
+- KiloBytes sent/received: 1/3 (vorher: 0/0)
+- Beacon erfolgreich gesendet nach 12 Minuten
+
+**✅ Station "SteGau" sendet jetzt:**
+```
+APRS beacon:
+SteGau>OGNSDR:/104416h4951.97NI01050.36E&/A=000929
+
+APRS status:
+SteGau>OGNSDR:>104416h v0.3.2.arm64 CPU:2.1 RAM:1434.5/4033.6MB
+NTP:0.0ms/-19.3ppm +35.5C EGM96:+47m 0/0Acfts[1h] RF:+0+0.0ppm/+8.6dB
+```
+
+**Position:** 49.86625°N, 10.83948°E, 283m AMSL
+**Live-Status:** http://live.glidernet.org/receiver-status/?id=SteGau
+
+### Rollback
+
+Falls Probleme auftreten:
+```bash
+sudo systemctl stop ogn-decode-procserv ogn-rf-procserv
+sudo cp -a /opt/rtlsdr-ogn.backup-before-viruspilot/* /opt/rtlsdr-ogn-0.3.2/
+sudo systemctl start ogn-rf-procserv ogn-decode-procserv
+```
+
+### Weitere Informationen
+
+- **OGN Closed Source:** Nur ogn-rf ist open source, ogn-decode ist closed source
+- **VirusPilot Community:** Andere OGN-Nutzer verwenden diese Builds erfolgreich
+- **GitHub Issues:** ARM64-Probleme sind seit 2023 dokumentiert
+- **Alternative:** Offizielle ARM64-Unterstützung in zukünftigen Releases möglich
+
+**Betroffene Services:**
+- `ogn-decode-procserv.service` - OGN Decoder mit neuem Binary
+- `ogn-rf-procserv.service` - OGN RF Receiver mit neuem Binary
+
+**Dokumentation:**
+- CHANGELOG.md: Dieser Eintrag
+- OGN-SETUP.md: Wird aktualisiert mit VirusPilot-Installation
+
+### Security-Absicherung (2026-02-10)
+
+**Problem:**
+- OGN-Binaries liefen als root ohne Einschränkungen
+- ogn-rf hatte setuid-Bit (Privilege Escalation-Risiko)
+- Keine AppArmor-Profile
+- Keine systemd-Hardening-Optionen
+
+**Implementiert:**
+
+1. **Update-Integration in Wartung:**
+   - Täglicher Check auf VirusPilot OGN Updates (GitHub API)
+   - Täglicher Check auf RTL-SDR Blog Updates (Git Tags)
+   - Warnung bei verfügbaren Updates mit Update-Prozedur
+   - Integriert in `/usr/local/sbin/claude-respond-to-reports`
+
+2. **AppArmor-Profile (Complain-Mode):**
+   - `/etc/apparmor.d/usr.local.ogn-rf`
+   - `/etc/apparmor.d/usr.local.ogn-decode`
+
+   **Schutz:**
+   - Kein Zugriff auf: /etc/shadow, /root, ~/.ssh, ~/.gnupg
+   - Keine Kernel-Änderungen: /sys/kernel, /proc/sys, /boot
+   - Capabilities eingeschränkt (deny sys_admin, sys_module, sys_boot)
+   - ogn-decode: Kein USB-Zugriff
+   - ogn-rf: Minimale Capabilities (sys_nice, sys_rawio, dac_override)
+
+**Status:**
+- ✅ AppArmor-Profile aktiv im **Enforce-Mode** (blockiert aktiv)
+- ✅ Services laufen stabil
+- ✅ Update-Checks integriert
+- ✅ **Option A Hardening implementiert (2026-02-10)**:
+  - PrivateTmp=yes
+  - NoNewPrivileges=yes
+  - AppArmor Enforce-Mode für alle Feeders (piaware, rbfeeder, pfclient, readsb, airplanes-feed, OGN)
+- ⚠️ Services laufen noch als root (Option B: Vollständiges Hardening optional)
+- ⚠️ setuid-Bit auf ogn-rf noch aktiv (Option B)
+
+**Enforce-Mode Aktivierung (2026-02-10):**
+1. ✅ 11 Tage Complain-Mode ohne Denials (seit 30. Januar)
+2. ✅ Alle Profile auf Enforce-Mode umgestellt
+3. ✅ AppArmor-Profile für OGN erweitert (USB-Verzeichnisse, udev)
+4. ✅ Systemd-Hardening (PrivateTmp, NoNewPrivileges)
+5. ✅ Keine Denials nach Service-Neustart
+
+**Profile im Enforce-Mode:**
+- piaware, rbfeeder, pfclient, readsb, airplanes-feed, chronyd
+- ogn-rf, ogn-decode (mit USB/udev-Zugriff)
+
+**Option B: Vollständiges Hardening (Optional):**
+- Service-User wechseln (root → pi)
+- setuid-Bit durch Capabilities ersetzen
+- Vollständiges systemd-Hardening (ProtectSystem, ProtectHome, RestrictNamespaces, etc.)
+
+**Security-Report:** Siehe `/tmp/ogn-security-report.txt` für Details
 
 
 ## 2026-02-09 - readsb Autogain Update + Security Audit Logging
@@ -1603,3 +1804,22 @@ Die FINALE Wartungszusammenfassung MUSS via [TELEGRAM:OK] am Ende erfolgen.
 - `/usr/local/sbin/claude-respond-to-reports`: Prompt-Klarstellung (Zeilen 676-680)
 
 **Effekt:** Claude wird nur noch EINE Telegram-Nachricht senden ([TELEGRAM:OK] am Ende), keine redundanten Zwischenmeldungen mehr
+
+## 2026-02-11: Wartungsskript Robustheit
+
+### Wartungsautomatisierung verbessert
+**Komponente:** `/usr/local/sbin/claude-respond-to-reports`
+
+**Fixes:**
+1. **OGN Binary Check korrigiert**
+   - Problem: GitHub Release Tag (v0.6) vs Binary-Version (v0.3.2.arm64) → False Positive
+   - Lösung: Prüft jetzt tatsächliche Binary-Version im upstream Tarball
+   - Test: ✅ Keine False Positives mehr
+
+2. **API-Limit-Handling**
+   - Problem: Exit 1 bei API-Limit ohne klare Fehlermeldung
+   - Lösung: Erkennt "out of extra usage", sendet Telegram-Notification, Exit 0
+   - Vorteil: Wartungs-Watchdog triggert nicht mehr fälschlicherweise
+
+**Impact:** Wartung läuft zuverlässiger, keine False-Alarm-Diagnosen mehr
+
