@@ -38,9 +38,11 @@
 - **Username:** jens76-stegaurach
 - **Config:** /etc/default/theairtraffic
 - **Server:** feed.theairtraffic.com:30004
-- **MLAT:** Netzwerkweit offline
+- **MLAT:** Netzwerkweit offline (Server `feed.theairtraffic.com:31090` verweigert Verbindung)
+- **MLAT-Client:** ✅ Gefixt (2026-02-15, `modes_reader.c` Python 3.11 Patch)
 - **Statistik:** https://theairtraffic.com/myip
 - **Update:** `cd /usr/local/share/theairtraffic/git && sudo bash update.sh`
+- **Letztes Update:** 2026-02-15 (Feed-Binary unverändert, MLAT-Client neu gebaut)
 
 ### airplanes.live
 - **UUID:** eeb47104-3dff-48a5-9ce0-11c208bd41d9

@@ -1,9 +1,60 @@
 # System Changelog
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-14
+**Letzte Aktualisierung:** 2026-02-15
 
 Chronologische Historie aller implementierten System-Änderungen.
+
+
+## 2026-02-15 - TheAirTraffic Update + Aircraft Alert Dedup-Fix
+
+### Änderung 1: TheAirTraffic Feeder Update
+Update via `update.sh` aus dem offiziellen Repo (Jxck-S/feedclient) durchgeführt.
+
+**Ergebnis:**
+- **Feed-Binary** (`feed-theairtraffic`): Keine Änderung (gleicher Git-Hash `f535e51`)
+- **MLAT-Client**: Neu kompiliert, crashte mit `ImportError: undefined symbol: _PyFloat_Unpack4`
+- **Service-Datei** + **Config**: Unverändert
+
+**MLAT-Fix:** Die C-Extension `modes_reader.c` im TheAirTraffic-Repo nutzt die veraltete
+private Python-API `_PyFloat_Unpack4` (seit Python 3.11 umbenannt zu `PyFloat_Unpack4`).
+Fix: `modes_reader.c` von adsbexchange übernommen (enthält `#if PY_MINOR_VERSION >= 11`
+Guard für beide API-Varianten).
+
+```bash
+sudo cp /usr/local/share/adsbexchange/mlat-client-git/modes_reader.c \
+        /usr/local/share/theairtraffic/mlat-client-git/modes_reader.c
+cd /usr/local/share/theairtraffic/mlat-client-git
+sudo /usr/local/share/theairtraffic/venv/bin/pip install --force-reinstall --no-cache-dir .
+sudo systemctl restart theairtraffic-mlat
+```
+
+**Hinweis:** Der TheAirTraffic MLAT-Server (`feed.theairtraffic.com:31090`) ist weiterhin
+offline (Connection refused). Der Client reconnected automatisch.
+
+### Änderung 2: Aircraft Alert Notifier - Doppelte Benachrichtigungen behoben
+**Problem:** Schnelle Tiefflieger (z.B. 450kt, 2000ft, 4.5km) erfüllten gleichzeitig
+`fast_lowlevel` UND `loud_close` → zwei separate Telegram-Nachrichten.
+
+**Ursache:** Die Schleife in `check_aircraft()` iterierte alle 6 Alert-Typen pro Flugzeug
+und sendete für jeden Treffer separat. Der Cooldown-Key war `alert_type:hex_id`, sodass
+sich verschiedene Alert-Typen nicht gegenseitig sperrten.
+
+**Fix:** Priority-basierte Deduplizierung pro Flugzeug. Alle Matches werden gesammelt,
+nur der mit der höchsten Priorität wird gesendet.
+
+| Priorität | Alert-Typ | Beschreibung |
+|-----------|-----------|--------------|
+| 1 | `emergency` | Notfall-Squawk |
+| 2 | `military_low` | Militär tief & nah |
+| 3 | `extremely_low` | Extrem tief (< 1000ft) |
+| 4 | `fast_lowlevel` | Schneller Tiefflieger |
+| 5 | `loud_close` | Laut & nah |
+| 6 | `helicopter_near` | Hubschrauber nah |
+
+**Geänderte Datei:** `/usr/local/sbin/aircraft-alert-notifier`
+- `ALERTS` dict: Neues `priority`-Feld pro Alert-Typ
+- `check_aircraft()`: Sammelt Matches, sendet nur besten
 
 
 ## 2026-02-14 - mlathub entfernt + Wartungs-Telegram-Fix

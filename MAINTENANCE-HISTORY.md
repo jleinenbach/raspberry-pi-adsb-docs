@@ -1,7 +1,7 @@
 # Maintenance History
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-14
+**Letzte Aktualisierung:** 2026-02-15
 
 Dokumentation von abgelehnten und ausstehenden Wartungsempfehlungen.
 
@@ -40,6 +40,22 @@ Dokumentation von abgelehnten und ausstehenden Wartungsempfehlungen.
 | Source | Recommendation | Risk |
 |--------|----------------|------|
 | *Keine* | Alle Systeme funktional | - |
+
+## Recent Issues Resolved (2026-02-15)
+
+### TheAirTraffic MLAT-Client `_PyFloat_Unpack4` Crash
+**Problem:** Nach TheAirTraffic Update crashte `theairtraffic-mlat` mit `ImportError: undefined symbol: _PyFloat_Unpack4`
+**Root Cause:** `modes_reader.c` im TheAirTraffic-Repo nutzt veraltete private Python-API (`_PyFloat_Unpack4` → seit 3.11 `PyFloat_Unpack4`)
+**Fix:** `modes_reader.c` von adsbexchange kopiert (hat `#if PY_MINOR_VERSION >= 11` Guard), MLAT-Client neu gebaut
+**Status:** ✅ Resolved
+
+### Doppelte Tiefflieger-Benachrichtigungen
+**Problem:** Schnelle Tiefflieger lösten gleichzeitig `fast_lowlevel` UND `loud_close` aus → 2 Telegram-Nachrichten
+**Root Cause:** Jeder Alert-Typ hat eigenen Cooldown-Key (`alert_type:hex_id`), verschiedene Typen sperren sich nicht gegenseitig
+**Fix:** Priority-basierte Deduplizierung: Pro Flugzeug wird nur der Alert mit höchster Priorität gesendet
+**Status:** ✅ Resolved
+
+---
 
 ## Recent Issues Resolved (2026-02-14)
 

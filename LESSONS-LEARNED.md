@@ -1,7 +1,7 @@
 # Lessons Learned
 
 **System:** Raspberry Pi 4 Model B - ADS-B/OGN/Remote ID Feeder
-**Letzte Aktualisierung:** 2026-02-07
+**Letzte Aktualisierung:** 2026-02-15
 
 Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
 
@@ -26,6 +26,18 @@ Troubleshooting-Referenz und gesammelte Erkenntnisse aus System-Wartung.
 | **trap mit Variablen** | **`trap 'rm -f "''"' RETURN` expandiert NICHT! Nutze Double-Quotes: `trap "rm -f \\"$var\\"" RETURN`** |
 | **$? nach command substitution** | **`local var=$(cmd); if [ $? -ne 0 ]` prüft IMMER 0 (Variable-Zuweisung)! FIX: `if [ -z "$var" ] \|\| ! validate "$var"`** |
 | **Text-Parsing robustness** | **Bei Line-by-Line Parsing: Filter leere Zeilen, Markdown-Prefixes (###, **, *), trim whitespace. Nutze grep -A für multiline Context.** |
+
+### Python C-Extensions & Private API (2026-02-15)
+| Problem | Detail | Lösung |
+|---------|--------|--------|
+| `_PyFloat_Unpack4` undefined | Python 3.11 hat private API `_PyFloat_Unpack4` zu öffentlicher `PyFloat_Unpack4` umbenannt. C-Extensions die alte API nutzen crashen mit `ImportError: undefined symbol` | Preprocessor Guard: `#if PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 11` für beide Varianten |
+| mlat-client `setup.py install` cached | `pip install --force-reinstall` ist nicht genug wenn `.egg` mit alter `.so` gecached ist | `--no-cache-dir` Flag hinzufügen |
+| Verschiedene mlat-client Repos divergieren | adsbexchange-Repo hat Python 3.11 Fix, TheAirTraffic-Fork nicht | Bei Build-Fehlern: funktionierende `modes_reader.c` von anderem Repo kopieren |
+
+### Alert-Dedup Pattern (2026-02-15)
+| Problem | Detail | Lösung |
+|---------|--------|--------|
+| Überlappende Alert-Regeln | Wenn Kriterien sich überlappen (z.B. `fast_lowlevel` ⊂ `loud_close` bei >400kt + <5.4km), werden mehrere Alerts für dasselbe Flugzeug gesendet | Priority-basierte Deduplizierung: Matches sammeln, nur den mit höchster Priorität senden |
 
 ### Telegram Bot & HTML Formatting (2026-02-04)
 
